@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quantum Circuit Playground</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Quantum Circuit Playground</h1>
+    <div class="controls">
+      <div class="ctrl">
+        <label>Qubits</label>
+        <button id="q-minus" class="stepper">−</button>
+        <span id="q-count">2</span>
+        <button id="q-plus" class="stepper">+</button>
+      </div>
+      <div class="ctrl">
+        <label>Shots</label>
+        <select id="shots">
+          <option>128</option><option>256</option><option>512</option>
+          <option selected>1024</option><option>2048</option><option>4096</option>
+        </select>
+      </div>
+      <div class="ctrl">
+        <button id="roll" class="btn btn-roll">Roll</button>
+        <span id="roll-result" class="roll-result"></span>
+      </div>
+      <div class="ctrl" id="run-mode-ctrl" hidden>
+        <label>Run on</label>
+        <select id="run-mode">
+          <option value="sim" selected>Classical simulator</option>
+          <option value="quantum">Quantum hardware</option>
+        </select>
+        <button id="run-hw" class="btn btn-roll" hidden>Run ▶</button>
+        <span id="run-status" class="run-status"></span>
+      </div>
+      <div class="spacer"></div>
+      <button id="undo" class="btn">Undo</button>
+      <button id="clear" class="btn btn-danger">Clear all</button>
+    </div>
+    <div class="palette-row">
+      <span class="palette-label">Gates</span>
+      <div class="palette" id="palette" title="Drag a gate onto the circuit (or click to add to q0)"></div>
+    </div>
+    <div class="palette-row">
+      <span class="palette-label">Algorithms</span>
+      <div class="palette algos" id="algos" title="Drag an algorithm onto the circuit to append it"></div>
+    </div>
+    <div class="palette-row">
+      <span class="palette-label">Dice</span>
+      <div class="palette algos" id="dice" title="Drag a die onto the circuit, then press Roll to get a face"></div>
+    </div>
+  </header>
+
+  <main>
+    <div class="circuit-scroll" id="circuit-scroll">
+      <div class="circuit-inner" id="circuit-inner">
+        <svg id="wires"></svg>
+      </div>
+    </div>
+
+    <section class="results">
+      <div class="tabs">
+        <button class="tab active" data-tab="measurement">Measurement</button>
+        <button class="tab" data-tab="statevector">Statevector</button>
+        <button class="tab" data-tab="bloch">Bloch spheres</button>
+      </div>
+      <div class="panel active" id="panel-measurement"><div id="histogram" class="histogram"></div></div>
+      <div class="panel" id="panel-statevector"><div id="statevector"></div></div>
+      <div class="panel" id="panel-bloch"><div id="bloch" class="bloch-row"></div></div>
+    </section>
+  </main>
+
+  <div id="angle-popover" class="angle-popover hidden">
+    <label>Angle: <span id="angle-val">90</span>°</label>
+    <input type="range" id="angle-slider" min="-180" max="180" step="1" value="90" />
+    <button id="angle-done" class="btn">Done</button>
+  </div>
+
+  <script src="dice.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+qiskit>=1.0
+numpy>=1.24
+# Quantum-run feature (QCB_ENABLE_QUANTUM_HW): local Aer sampler for the
+# counts-only path, and Qiskit Runtime for real IBM Quantum devices.
+qiskit-aer>=0.14
+qiskit-ibm-runtime>=0.20
