@@ -28,7 +28,7 @@ LABEL = {"h": "H", "x": "X", "y": "Y", "z": "Z", "s": "S", "t": "T",
          "ccx": "CCX", "cswap": "CSWAP"}
 PARAM = {"rx", "ry", "rz", "cp"}
 
-DICE = [4, 6, 8, 10, 12, 20, 100]
+DICE = [2, 4, 6, 8, 10, 12, 20, 100]
 
 
 def build(N):

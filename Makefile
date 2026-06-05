@@ -1,4 +1,4 @@
-.PHONY: help install run dev clean
+.PHONY: help install run dev test test-backend test-frontend clean
 
 # Load .env if present (HOST, PORT, QCB_MAX_*) and export to child processes.
 ifneq (,$(wildcard .env))
@@ -29,6 +29,14 @@ run: install         ## Start the app (http://$(HOST):$(PORT))
 
 dev: install         ## Start with auto-reload for development
 	$(UVICORN) backend.main:app --host $(HOST) --port $(PORT) --reload
+
+test: test-backend test-frontend  ## Run all tests (backend + frontend)
+
+test-backend: install  ## Run the backend test suite (pytest)
+	$(PY) -m pytest backend
+
+test-frontend:       ## Run the frontend test suite (node --test, no npm)
+	node --test frontend/tests/*.test.mjs
 
 clean:               ## Remove the virtualenv and Python caches
 	rm -rf $(VENV)

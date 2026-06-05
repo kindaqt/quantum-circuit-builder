@@ -1,4 +1,7 @@
 fastapi>=0.110
+# Used directly (from pydantic import BaseModel) in api.py/core.py — FastAPI also
+# pulls it in, but we import it ourselves so declare it explicitly.
+pydantic>=2.0
 uvicorn[standard]>=0.27
 qiskit>=1.0
 numpy>=1.24
@@ -6,3 +9,12 @@ numpy>=1.24
 # counts-only path, and Qiskit Runtime for real IBM Quantum devices.
 qiskit-aer>=0.14
 qiskit-ibm-runtime>=0.20
+# AWS Braket provider (QCB_QUANTUM_PROVIDER=braket). Optional and lazily imported
+# — only needed to run on Braket's local simulator or real AWS devices. Uncomment
+# (or `pip install amazon-braket-sdk`) to enable:
+# amazon-braket-sdk>=1.80
+# AI circuit-explainer feature (QCB_ENABLE_AI). Only needed when the explainer
+# is enabled; lazily imported so the app runs without it otherwise.
+anthropic>=0.40
+# Test suite (`make test`). Dev-only; not needed to run the app.
+pytest>=8.0

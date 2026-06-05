@@ -15,16 +15,24 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
+html { height: 100%; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 13px;
+  /* The page itself never scrolls: it's a fixed-height column (top bar + main).
+     Only the circuit and the active results panel scroll, each on its own. */
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* ---- Top bar ---- */
 .topbar {
+  flex: none;            /* fixed-height header; never grows or shrinks */
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
@@ -43,6 +51,7 @@ body {
 }
 .ctrl { display: flex; align-items: center; gap: 6px; }
 .ctrl label { color: var(--muted); font-size: 12px; }
+.ctrl.stat { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .spacer { flex: 1; }
 
 #q-count { min-width: 14px; text-align: center; font-weight: 600; }
@@ -74,18 +83,16 @@ select:focus { outline: 1px solid var(--accent); }
 .btn-roll { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .btn-roll:hover { background: var(--accent); color: #fff; }
 
-.roll-result {
-  min-width: 70px;
-  font-size: 18px;
-  font-weight: 700;
-  font-family: monospace;
-  color: var(--accent);
-}
-.roll-result.rolling { color: var(--muted); }
-
 .run-status { color: var(--muted); font-size: 11px; min-width: 90px; }
 .run-status.busy { color: var(--accent); }
 .run-status.err { color: var(--gate); }
+/* The "Run on" picker (label + select) flows as part of the run-mode flex row;
+   `display:contents` lets its children sit in the parent's gap, and `hidden`
+   still collapses the whole group when no quantum backend is configured. */
+.run-on-pick { display: contents; }
+.run-on-pick[hidden] { display: none; }
+/* The Run button shows a brief "running" state while a submit is in flight. */
+.btn-roll.is-busy { opacity: 0.75; pointer-events: none; }
 
 /* ---- Gate palette ---- */
 .palette-row {
@@ -95,13 +102,34 @@ select:focus { outline: 1px solid var(--accent); }
   margin-top: 6px;
 }
 .palette-label {
-  flex: 0 0 70px;
+  /* Left-align in a fixed-width column so every row's caret and text start at the
+     SAME x — the three labels line up evenly down the left edge. The fixed basis
+     also keeps every palette box starting at the same x. Basis fits the widest
+     label ("ALGORITHMS") plus its caret so nothing overflows. */
+  flex: 0 0 94px;             /* just wide enough for the widest label "▾ ALGORITHMS" (~92px) so
+                                 every label is the SAME width (carets + boxes line up) while the
+                                 gutter stays tight, leaving the palette boxes as wide as possible */
+  text-align: left;
+  white-space: nowrap;        /* keep "▾ ALGORITHMS" on one line — never wrap the caret off */
   color: var(--muted);
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
   padding-top: 11px;
+  /* It's a real <button> now (click to collapse the row), so strip the chrome. */
+  background: none;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
 }
+.palette-label:hover { color: var(--text); }
+/* Caret hints at the collapse state: ▾ open, ▸ collapsed. */
+.palette-label::before {
+  content: "▾ ";
+  font-size: 9px;
+}
+.palette-row.collapsed .palette-label::before { content: "▸ "; }
+.palette-row.collapsed .palette,
+.palette-row.collapsed .roll-count { display: none; }
 .palette {
   flex: 1;
   display: flex;
@@ -149,11 +177,24 @@ body.dragging { user-select: none; cursor: grabbing; }
 .gate-moving { opacity: 0.25; }
 
 /* ---- Circuit ---- */
-main { padding: 8px 12px; }
+main {
+  padding: 8px 12px;
+  /* Fill the space under the top bar and split it between the circuit and the
+     results, each scrolling on its own. min-height:0 lets children shrink so the
+     inner scrollbars (not the page) absorb any overflow. */
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .circuit-scroll {
   width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
+  /* Scroll both ways: horizontally as gates pile up, vertically as the user
+     adds qubit lines past what fits. Capped at 55vh so the results below always
+     keep room; shrinks below that when the circuit is small. */
+  flex: 0 1 auto;
+  overflow: auto;
+  max-height: 55vh;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
@@ -161,13 +202,68 @@ main { padding: 8px 12px; }
 .circuit-inner { position: relative; min-height: 116px; }
 #wires { position: absolute; top: 0; left: 0; pointer-events: none; }
 
+/* Drag handle between the circuit and the results to retrade vertical space. */
+.pane-divider {
+  flex: 0 0 auto;
+  height: 10px;
+  margin: 2px 0;
+  cursor: row-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+.pane-divider::before {
+  content: "";
+  width: 48px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background 0.15s ease;
+}
+.pane-divider:hover::before { background: var(--accent); }
+body.resizing-v { cursor: row-resize; user-select: none; }
+
+/* Opaque strip behind the qubit labels; pinned left during horizontal scroll. */
+.qgutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 46px; /* == LABEL_W */
+  background: var(--panel);
+  z-index: 5;
+  pointer-events: none;
+  transform: translateX(var(--sx, 0));
+}
+
 .qlabel {
   position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   font-style: italic;
   font-size: 13px;
   color: var(--muted);
-  transform: translateY(-50%);
+  z-index: 6;
+  /* --sx pins the label to the viewport's left edge while the circuit scrolls
+     horizontally (set on .circuit-inner by the scroll handler). */
+  transform: translate(var(--sx, 0), -50%);
 }
+.qid { line-height: 1; }
+.qinit {
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1.1;
+  padding: 0 3px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.qinit:hover { border-color: var(--border); color: var(--text); }
+.qinit.one { color: var(--accent); border-color: var(--accent); font-weight: 700; }
 
 .gatebox {
   position: absolute;
@@ -262,9 +358,16 @@ main { padding: 8px 12px; }
   padding: 2px 9px;
   font-size: 11px;
   cursor: pointer;
+  z-index: 6;
+  /* Stay visible at the left edge while the circuit scrolls horizontally. */
+  transform: translateX(var(--sx, 0));
 }
 .add-line:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .add-line:disabled { opacity: 0.4; cursor: default; }
+
+/* "− qubit" sits to the right of "+ qubit" and reads as a removal (red on hover). */
+.remove-line { left: 78px; }
+.remove-line:hover:not(:disabled) { border-color: var(--gate); color: var(--gate); }
 
 .hint {
   color: var(--muted);
@@ -274,8 +377,16 @@ main { padding: 8px 12px; }
 }
 
 /* ---- Results ---- */
-.results { margin-top: 10px; }
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.results {
+  margin-top: 10px;
+  /* Take the space the circuit doesn't, and become a column whose active panel
+     scrolls vertically when the histogram / statevector / Bloch row overflows. */
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tabs { flex: none; display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
 .tab {
   background: none; border: none; color: var(--muted);
   padding: 6px 10px; cursor: pointer; font-size: 12px;
@@ -283,7 +394,194 @@ main { padding: 8px 12px; }
 }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 .panel { display: none; padding: 12px 4px; }
-.panel.active { display: block; }
+/* Only the active panel is shown; it fills the results area and scrolls
+   vertically when its contents are taller than the space available. */
+.panel.active { display: block; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+/* "these are simulated, not measured" banner on hardware/qsim runs */
+.sim-note {
+  background: rgba(75, 139, 255, 0.10);
+  border: 1px solid rgba(75, 139, 255, 0.35);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+/* AI explainer panel */
+/* Professor identity + chat-style answers */
+.prof-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.prof-avatar {
+  flex: none; width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px; line-height: 1;
+  border-radius: 50%; background: var(--panel-2); border: 1px solid var(--border);
+  overflow: hidden;
+}
+/* Inline SVG avatars fill the circular slot; the emoji fallback keeps line-height 1. */
+.avatar-svg { width: 100%; height: 100%; display: block; }
+.avatar-svg svg { width: 100%; height: 100%; display: block; }
+.avatar-emoji { display: inline-flex; align-items: center; justify-content: center; }
+.prof-name { font-weight: 600; font-size: 13px; }
+.prof-model { color: var(--muted); font-size: 11px; }
+/* Persona picker sits at the right edge of the header. */
+.prof-meta { margin-right: auto; }
+.persona-pick { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.persona-pick select {
+  color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; font-size: 12px; cursor: pointer;
+}
+.persona-pick select:focus { outline: 1px solid var(--accent); }
+
+/* Custom persona dropdown — a native <select> can't show the SVG avatars, so this
+   is a small listbox we drive ourselves. */
+.persona-combo { position: relative; }
+.persona-combo-label { color: var(--muted); }
+.persona-trigger {
+  display: flex; align-items: center; gap: 7px;
+  color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 8px 3px 4px; font-size: 12px; cursor: pointer;
+  min-width: 150px;
+}
+.persona-trigger:hover { border-color: var(--accent); }
+.persona-trigger:focus-visible { outline: 1px solid var(--accent); }
+.persona-trigger-av {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  overflow: hidden; background: var(--panel); border: 1px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 14px;
+}
+.persona-trigger-name { margin-right: auto; white-space: nowrap; }
+.persona-caret { color: var(--muted); font-size: 10px; }
+.persona-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 60;
+  width: 230px; max-height: 320px; overflow-y: auto;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 4px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.persona-opt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 7px; border-radius: 6px; cursor: pointer; color: var(--text);
+}
+.persona-opt:hover { background: var(--panel); }
+.persona-opt.is-active { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.persona-opt-av {
+  flex: none; width: 26px; height: 26px; border-radius: 50%;
+  overflow: hidden; background: var(--panel); border: 1px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 15px;
+}
+.persona-opt-av svg, .persona-trigger-av svg { width: 100%; height: 100%; display: block; }
+.persona-opt-name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.prof-msg { display: flex; align-items: flex-start; gap: 10px; }
+.prof-msg .prof-avatar { width: 32px; height: 32px; margin-top: 2px; font-size: 22px; }
+.prof-bubble {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 8px 14px; max-width: 66ch;
+}
+.prof-bubble p:last-child { margin-bottom: 0; }
+/* Inline `code` spans from the professor's Markdown (gate names, etc.). */
+.prof-bubble code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 4px; padding: 0 4px;
+}
+/* The circuit thumbnail in the professor's "reading your circuit" bubble. */
+.prof-circuit-thumb {
+  display: block;
+  margin-top: 8px;
+  max-width: 100%;
+  max-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: zoom-in;
+}
+.prof-circuit-thumb:hover { border-color: var(--accent); }
+/* Per-turn wall-clock time, shown small and muted under each message. */
+.explain-time {
+  display: block; margin-top: 6px;
+  font-size: 11px; color: var(--muted); font-family: monospace;
+}
+.explain-question .explain-time { display: inline; margin-left: 8px; }
+
+/* ---- Inline TeX math (rendered by latex.js) ---- */
+.math {
+  font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", Georgia, serif;
+  white-space: nowrap;
+  font-style: italic;
+}
+.math sup, .math sub { font-style: normal; }
+.math-display {
+  display: block;
+  text-align: center;
+  font-size: 1.12em;
+  margin: 10px 0;
+}
+/* Stacked fraction with a dividing rule. */
+.tex-frac {
+  display: inline-flex;
+  flex-direction: column;
+  vertical-align: middle;
+  text-align: center;
+  margin: 0 0.18em;
+  font-size: 0.92em;
+}
+.tex-num { display: block; padding: 0 0.35em; border-bottom: 1px solid currentColor; line-height: 1.25; }
+.tex-den { display: block; padding: 0 0.35em; line-height: 1.25; }
+/* Square root: the √ glyph followed by an overlined radicand. */
+.tex-sqrt { white-space: nowrap; }
+.tex-sqrt-rad { border-top: 1px solid currentColor; padding: 0 0.15em; margin-left: -0.05em; }
+/* Accents over a symbol (\hat, \bar/\overline, \vec). */
+.tex-hat, .tex-bar, .tex-vec { position: relative; display: inline-block; }
+.tex-hat::before {
+  content: "^"; position: absolute; top: -0.55em; left: 0; right: 0;
+  text-align: center; font-size: 0.9em; line-height: 1;
+}
+.tex-bar { border-top: 1px solid currentColor; }
+.tex-vec::before {
+  content: "→"; position: absolute; top: -0.7em; left: 0; right: 0;
+  text-align: center; font-size: 0.7em; line-height: 1;
+}
+.explain-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.explain-auto { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.explain-model { color: var(--muted); font-size: 11px; }
+.explain-ask { display: flex; gap: 8px; margin-bottom: 12px; }
+.explain-q {
+  flex: 1; min-width: 0; max-width: 70ch;
+  padding: 7px 10px; font-size: 13px;
+  color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.explain-q:focus { outline: 1px solid var(--accent); }
+/* The professor panel is a column: header + controls + ask box stay put, and the
+   conversation log scrolls on its own so the chat can grow without moving them. */
+#panel-explain.active { display: flex; flex-direction: column; overflow: hidden; }
+#panel-explain .prof-header,
+#panel-explain .explain-bar,
+#panel-explain .explain-ask { flex: none; }
+.explain-out { font-size: 13px; line-height: 1.55; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.explain-out > p, .prof-bubble { max-width: 70ch; }
+.explain-out p { margin: 0 0 10px; }
+.explain-question { color: var(--muted); border-left: 2px solid var(--accent); padding-left: 10px; }
+
+/* histogram controls */
+.hist-controls {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 10px; flex-wrap: wrap;
+}
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg-btn {
+  background: var(--panel-2); color: var(--muted); border: none;
+  padding: 4px 10px; font-size: 12px; cursor: pointer;
+  border-left: 1px solid var(--border);
+}
+.seg-btn:first-child { border-left: none; }
+.seg-btn:hover { color: var(--text); }
+.seg-btn.active { background: var(--accent); color: #fff; }
 
 /* histogram */
 .histogram {
@@ -294,6 +592,51 @@ main { padding: 8px 12px; }
 .hbar .bar { width: 30px; background: var(--accent); border-radius: 3px 3px 0 0; }
 .hbar .cnt { font-size: 10px; color: var(--muted); margin-bottom: 2px; }
 .hbar .lbl { font-size: 11px; margin-top: 4px; font-family: monospace; }
+
+/* quantum run queue */
+.queue { display: flex; flex-direction: column; gap: 12px; }
+.qrun {
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  background: var(--panel-2);
+}
+.qrun-pending { border-color: var(--accent); }
+.qrun-failed { border-color: var(--gate); }
+.qrun-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 8px;
+}
+.qrun-title { font-size: 12px; color: var(--muted); font-family: monospace; }
+/* Wall-clock time of the run; auto margin pushes it (and the status pill) right. */
+.qrun-time { font-size: 11px; color: var(--muted); font-family: monospace; margin-left: auto; }
+.qrun-status {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.qrun-status-pending { color: var(--accent); border-color: var(--accent); }
+/* Soft pulse so a pending run reads as "in flight". */
+.qrun-status-pending { animation: qpulse 1.2s ease-in-out infinite; }
+@keyframes qpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.qrun-status-done { color: var(--text); }
+.qrun-status-failed { color: var(--gate); border-color: var(--gate); }
+/* The circuit picture sits in a framed box that scrolls horizontally when the
+   circuit is wider than the card, instead of squashing the diagram. */
+.qrun-circuit-wrap {
+  max-width: 100%; overflow-x: auto; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--border);
+}
+.qrun-circuit {
+  display: block; width: auto; height: auto; max-height: 150px; border-radius: 6px;
+  cursor: zoom-in;
+}
+.qrun-circuit-ph {
+  font-size: 12px; color: var(--muted); padding: 14px; text-align: center;
+  border: 1px dashed var(--border); border-radius: 6px;
+}
+.qrun-results { margin-top: 10px; }
+.queue-hist { height: 130px; }
+.qrun-detail { margin-top: 8px; font-size: 12px; }
+.qrun-detail.muted { color: var(--muted); }
+.qrun-detail.err { color: var(--gate); }
 
 /* statevector table */
 table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -320,3 +663,365 @@ td.mono { font-family: monospace; }
 }
 .angle-popover.hidden { display: none; }
 .angle-popover input { width: 160px; }
+
+/* ---- Dice roll modal ------------------------------------------------------
+   A click on a die flashes the rolled face in the centre of the screen. The
+   overlay background is fully transparent and click-through (pointer-events:
+   none) so it never dims or blocks the app; only the card is visible, and it
+   fades out ~1s after the result lands. */
+.roll-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: transparent;
+  z-index: 60;
+}
+.roll-modal.hidden { display: none; }
+.roll-card {
+  position: relative; /* anchor for the fireworks overlay on a nat 20 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 24px 40px;
+  border-radius: 16px;
+  background: var(--panel-2);
+  border: 2px solid var(--accent);
+  box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+  /* Pop in instantly; the fade-out is driven by the .fade class below. */
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+/* Nat-20 celebration: a warm golden glow on the card plus the fireworks burst. */
+.roll-card.nat20 {
+  border-color: #ffd34e;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.6), 0 0 28px rgba(255,211,78,0.55);
+}
+.fireworks {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 1;
+}
+.fw {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  opacity: 0;
+  animation: fw-burst 1.1s ease-out forwards;
+}
+@keyframes fw-burst {
+  0%   { transform: translate(0, 0) scale(0.3); opacity: 1; }
+  70%  { opacity: 1; }
+  100% { transform: translate(var(--dx), var(--dy)) scale(1); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fw { animation-duration: 0.01s; opacity: 0; }
+}
+.roll-modal.fade .roll-card {
+  opacity: 0;
+  transform: scale(0.85);
+}
+.roll-die {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+/* The roll result is the headline: one big value per die, wrapping if several. */
+.roll-face {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 18px;
+  max-width: 340px;
+}
+.roll-face[hidden] { display: none; }
+.roll-val {
+  font-size: 72px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+/* Smaller per-die values once there are several, so they still fit the card. */
+.roll-face:has(.roll-val + .roll-val) .roll-val { font-size: 46px; }
+.roll-total {
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.roll-total[hidden] { display: none; }
+
+/* Statevector behind a single-die roll, shown inside the roll modal */
+.roll-sv {
+  margin-top: 12px;
+  width: 100%;
+  min-width: 200px;
+}
+.roll-sv[hidden] { display: none; }
+.roll-sv-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.roll-sv table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.roll-sv th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 500;
+  padding: 1px 6px 3px 0;
+}
+.roll-sv td {
+  padding: 1px 6px 1px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Recent rolls" list inside the roll modal */
+.roll-recent {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  width: 100%;
+  min-width: 180px;
+}
+.roll-recent[hidden] { display: none; }
+.roll-recent-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.roll-recent-row {
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  padding: 1px 0;
+}
+
+/* roll-count selector in the dice row */
+.roll-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  padding-top: 9px;
+  flex: 0 0 auto;
+}
+.roll-count select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+/* ---- Export modal ---------------------------------------------------------
+   A real dialog (unlike the click-through roll modal): a dimmed backdrop you can
+   click to dismiss, and a centred card holding the Qiskit + QASM source. */
+.export-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 80;
+}
+.export-modal.hidden { display: none; }
+.export-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+.export-card {
+  position: relative;
+  width: min(680px, 92vw);
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 18px 20px 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+}
+.export-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.export-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+#export-close { font-size: 15px; line-height: 1; padding: 2px 9px; }
+.export-hint { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 0 0 14px; }
+.export-section { margin-bottom: 14px; }
+.export-section:last-child { margin-bottom: 0; }
+.export-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.export-title { color: var(--accent); font-size: 12px; font-weight: 600; }
+#export-png-download:disabled { opacity: 0.4; cursor: default; }
+.export-code {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  /* Long programs scroll within their own box rather than stretching the modal
+     past the viewport — the card stays put and each block scrolls on both axes. */
+  max-height: 280px;
+  overflow: auto;
+}
+
+/* Near-fullscreen circuit view (opened from the professor's circuit thumbnail). */
+.circuit-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  z-index: 90;
+}
+.circuit-modal.hidden { display: none; }
+.circuit-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.78);
+}
+/* The card hugs the circuit: it grows to the image's natural size, but never past
+   the viewport (minus the overlay padding), and scrolls in either axis when the
+   circuit is too big to fit. */
+.circuit-modal-card {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  /* Reserve the vertical scrollbar's gutter up front. Without this, a tall circuit
+     adds a vertical scrollbar that eats into the content width, which then trips a
+     spurious *horizontal* scrollbar (on platforms with classic, space-taking
+     scrollbars). Reserving the gutter keeps the content width stable. */
+  scrollbar-gutter: stable;
+  padding: 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+}
+.circuit-modal-img {
+  display: block;
+  max-width: none;
+  max-height: none;
+}
+/* Pinned to the viewport corner so it stays reachable while the card scrolls. */
+.circuit-modal-close {
+  position: fixed;
+  top: 18px;
+  right: 20px;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 10px;
+  z-index: 1;
+}
+
+/* ---- General error modal ----
+   A last-resort surface for failures that have no dedicated place to show
+   (unexpected exceptions, unhandled promise rejections, explicit-action errors). */
+.error-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+.error-modal.hidden { display: none; }
+.error-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+.error-modal-card {
+  position: relative;
+  max-width: 460px;
+  width: 100%;
+  padding: 22px 24px 18px;
+  background: var(--panel);
+  border: 1px solid var(--gate);
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+}
+.error-modal-head { display: flex; align-items: center; gap: 12px; }
+.error-modal-icon {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: #fff;
+  background: var(--gate);
+  border-radius: 50%;
+}
+.error-modal-head h2 { margin: 0; font-size: 16px; }
+.error-modal-msg {
+  margin: 14px 2px 18px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 50vh;
+  overflow: auto;
+}
+.error-modal-actions { display: flex; justify-content: flex-end; }
+
+/* Styled hover tooltip for palette chips (gates / algorithms / dice). */
+.tip {
+  position: fixed;
+  z-index: 70;
+  max-width: 260px;
+  padding: 7px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  pointer-events: none;
+}
+.tip.hidden { display: none; }

@@ -2,6 +2,7 @@
 // Each die prepares an equal superposition over faces 0..N-1 (measure to roll).
 // Loaded before app.js; gate objects match app.js's a() shape.
 const DICE_CIRCUITS = {
+  "d2": { n: 1, desc: "Fair d2: uniform over 2 outcomes (faces 0–1).", gates: [{label:"H",qubits:[0],param:null}] },
   "d4": { n: 2, desc: "Fair d4: uniform over 4 outcomes (faces 0–3).", gates: [{label:"H",qubits:[0],param:null}, {label:"H",qubits:[1],param:null}] },
   "d6": { n: 3, desc: "Fair d6: uniform over 6 outcomes (faces 0–5).", gates: [{label:"RY",qubits:[0],param:-1.5707963268}, {label:"RZ",qubits:[0],param:-2.7488935719}, {label:"RY",qubits:[1],param:1.5707963268}, {label:"RZ",qubits:[1],param:0.7853981634}, {label:"RY",qubits:[2],param:1.2309594173}, {label:"CX",qubits:[2,1],param:null}, {label:"RZ",qubits:[1],param:-0.7853981634}, {label:"RX",qubits:[1],param:-1.5707963268}, {label:"CX",qubits:[1,0],param:null}, {label:"RZ",qubits:[0],param:-0.3926990817}, {label:"CX",qubits:[2,0],param:null}, {label:"RZ",qubits:[0],param:0.3926990817}, {label:"CX",qubits:[1,0],param:null}, {label:"RZ",qubits:[0],param:-0.3926990817}, {label:"RX",qubits:[0],param:-1.5707963268}] },
   "d8": { n: 3, desc: "Fair d8: uniform over 8 outcomes (faces 0–7).", gates: [{label:"H",qubits:[0],param:null}, {label:"H",qubits:[1],param:null}, {label:"H",qubits:[2],param:null}] },

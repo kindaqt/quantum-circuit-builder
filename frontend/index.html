@@ -24,34 +24,49 @@
           <option selected>1024</option><option>2048</option><option>4096</option>
         </select>
       </div>
-      <div class="ctrl">
-        <button id="roll" class="btn btn-roll">Roll</button>
-        <span id="roll-result" class="roll-result"></span>
-      </div>
       <div class="ctrl" id="run-mode-ctrl" hidden>
-        <label>Run on</label>
-        <select id="run-mode">
-          <option value="sim" selected>Classical simulator</option>
-          <option value="quantum">Quantum hardware</option>
-        </select>
-        <button id="run-hw" class="btn btn-roll" hidden>Run ▶</button>
+        <span class="run-on-pick" id="run-on-pick" hidden>
+          <label>Run on</label>
+          <select id="run-mode">
+            <option value="sim" selected>Classical simulator</option>
+            <option value="quantum">Quantum hardware</option>
+          </select>
+        </span>
+        <button id="run-hw" class="btn btn-roll">Run ▶</button>
         <span id="run-status" class="run-status"></span>
       </div>
+      <div class="ctrl stat" id="circuit-stats" aria-live="polite"></div>
       <div class="spacer"></div>
+      <button id="export" class="btn">Export</button>
       <button id="undo" class="btn">Undo</button>
       <button id="clear" class="btn btn-danger">Clear all</button>
     </div>
     <div class="palette-row">
-      <span class="palette-label">Gates</span>
-      <div class="palette" id="palette" title="Drag a gate onto the circuit (or click to add to q0)"></div>
+      <button class="palette-label" type="button" aria-expanded="true" aria-controls="palette">Gates</button>
+      <div class="palette" id="palette"></div>
     </div>
     <div class="palette-row">
-      <span class="palette-label">Algorithms</span>
-      <div class="palette algos" id="algos" title="Drag an algorithm onto the circuit to append it"></div>
+      <button class="palette-label" type="button" aria-expanded="true" aria-controls="algos">Algorithms</button>
+      <div class="palette algos" id="algos"></div>
     </div>
     <div class="palette-row">
-      <span class="palette-label">Dice</span>
-      <div class="palette algos" id="dice" title="Drag a die onto the circuit, then press Roll to get a face"></div>
+      <button class="palette-label" type="button" aria-expanded="true" aria-controls="dice">Dice</button>
+      <div class="palette algos" id="dice"></div>
+      <label class="roll-count" title="How many dice to roll at once">
+        Dice
+        <select id="roll-count">
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+          <option value="9">9</option>
+          <option value="10">10</option>
+        </select>
+      </label>
     </div>
   </header>
 
@@ -62,17 +77,145 @@
       </div>
     </div>
 
+    <div class="pane-divider" id="pane-divider" title="Drag to resize" role="separator" aria-orientation="horizontal"></div>
+
     <section class="results">
       <div class="tabs">
+        <button class="tab" data-tab="explain" id="tab-explain" hidden>Professor</button>
         <button class="tab active" data-tab="measurement">Measurement</button>
         <button class="tab" data-tab="statevector">Statevector</button>
         <button class="tab" data-tab="bloch">Bloch spheres</button>
+        <button class="tab" data-tab="queue" id="tab-queue" hidden>Queue</button>
       </div>
-      <div class="panel active" id="panel-measurement"><div id="histogram" class="histogram"></div></div>
+      <div class="panel active" id="panel-measurement">
+        <div class="hist-controls" id="hist-controls">
+          <div class="seg" role="group" aria-label="Show counts or probabilities">
+            <button class="seg-btn active" data-hist-mode="counts">Counts</button>
+            <button class="seg-btn" data-hist-mode="prob">Probability</button>
+          </div>
+          <div class="seg" role="group" aria-label="Sort order">
+            <button class="seg-btn active" data-hist-sort="basis">Basis order</button>
+            <button class="seg-btn" data-hist-sort="value">By value</button>
+          </div>
+          <span class="spacer"></span>
+          <button class="btn" id="hist-png" title="Download the histogram as a PNG image">PNG</button>
+          <button class="btn" id="hist-csv" title="Download the outcomes as a CSV file">CSV</button>
+        </div>
+        <div id="histogram" class="histogram"></div>
+      </div>
       <div class="panel" id="panel-statevector"><div id="statevector"></div></div>
       <div class="panel" id="panel-bloch"><div id="bloch" class="bloch-row"></div></div>
+      <div class="panel" id="panel-queue"><div id="queue" class="queue"></div></div>
+      <div class="panel" id="panel-explain">
+        <div class="prof-header">
+          <span class="prof-avatar" id="prof-avatar-slot" aria-hidden="true"></span>
+          <div class="prof-meta">
+            <div class="prof-name" id="prof-name">The Professor</div>
+            <div class="prof-model explain-model" id="explain-model"></div>
+          </div>
+          <label class="persona-pick" title="Choose the AI provider that runs the explanation">
+            Provider
+            <select id="provider-select"></select>
+          </label>
+          <label class="persona-pick" title="Choose the model to use">
+            Model
+            <select id="model-select"></select>
+          </label>
+          <div class="persona-pick persona-combo" id="persona-combo">
+            <span class="persona-combo-label">Persona</span>
+            <button type="button" class="persona-trigger" id="persona-trigger"
+                    aria-haspopup="listbox" aria-expanded="false"
+                    title="Choose who explains your circuit">
+              <span class="persona-trigger-av" id="persona-trigger-av" aria-hidden="true"></span>
+              <span class="persona-trigger-name" id="persona-trigger-name">The Professor</span>
+              <span class="persona-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="persona-menu" id="persona-menu" role="listbox"
+                 aria-label="Persona" hidden></div>
+          </div>
+        </div>
+        <div class="explain-bar">
+          <button id="explain-btn" class="btn btn-roll">Explain this circuit</button>
+          <label class="explain-auto" title="Automatically explain the circuit after you run it on hardware">
+            <input type="checkbox" id="explain-auto" checked /> Auto-explain after a run
+          </label>
+          <span class="spacer"></span>
+          <button id="explain-clear" class="btn" title="Start a fresh conversation">Clear chat</button>
+        </div>
+        <div class="explain-ask">
+          <input type="text" id="explain-q" class="explain-q" maxlength="1000"
+                 placeholder="Ask the professor a question about this circuit…" />
+          <button id="explain-ask-btn" class="btn">Ask</button>
+        </div>
+        <div id="explain-out" class="explain-out">
+          <div class="hint">Run a circuit, press “Explain this circuit”, or ask the professor a question to get a plain-language answer grounded in your circuit.</div>
+        </div>
+      </div>
     </section>
   </main>
+
+  <div id="roll-modal" class="roll-modal hidden" aria-live="polite">
+    <div class="roll-card">
+      <div class="roll-die" id="roll-die"></div>
+      <div class="roll-face" id="roll-face"></div>
+      <div class="roll-total" id="roll-total" hidden></div>
+      <div class="roll-sv" id="roll-sv" hidden></div>
+      <div class="roll-recent" id="roll-recent"></div>
+    </div>
+  </div>
+
+  <div id="export-modal" class="export-modal hidden" role="dialog" aria-modal="true" aria-label="Export circuit">
+    <div class="export-backdrop" id="export-backdrop"></div>
+    <div class="export-card">
+      <div class="export-head">
+        <h2>Export circuit</h2>
+        <button id="export-close" class="btn" aria-label="Close">×</button>
+      </div>
+      <p class="export-hint">Copy this circuit as runnable code, or grab a PNG of the diagram. Both code forms measure every qubit, so they reproduce the histogram you see here.</p>
+      <div class="export-section">
+        <div class="export-section-head">
+          <span class="export-title">Circuit diagram</span>
+          <button class="btn" id="export-png-download">Download PNG</button>
+        </div>
+      </div>
+      <div class="export-section">
+        <div class="export-section-head">
+          <span class="export-title">Qiskit (Python)</span>
+          <button class="btn export-copy" data-copy="export-qiskit">Copy</button>
+        </div>
+        <pre class="export-code" id="export-qiskit"></pre>
+      </div>
+      <div class="export-section">
+        <div class="export-section-head">
+          <span class="export-title">OpenQASM 3</span>
+          <button class="btn export-copy" data-copy="export-qasm">Copy</button>
+        </div>
+        <pre class="export-code" id="export-qasm"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div id="circuit-modal" class="circuit-modal hidden" role="dialog" aria-modal="true" aria-label="Circuit diagram">
+    <div class="circuit-modal-backdrop" id="circuit-modal-backdrop"></div>
+    <div class="circuit-modal-card">
+      <button id="circuit-modal-close" class="btn circuit-modal-close" aria-label="Close">×</button>
+      <img id="circuit-modal-img" class="circuit-modal-img" alt="The circuit being explained" />
+    </div>
+  </div>
+
+  <div id="error-modal" class="error-modal hidden" role="alertdialog" aria-modal="true" aria-labelledby="error-modal-title">
+    <div class="error-modal-backdrop" id="error-modal-backdrop"></div>
+    <div class="error-modal-card">
+      <div class="error-modal-head">
+        <span class="error-modal-icon" aria-hidden="true">!</span>
+        <h2 id="error-modal-title">Something went wrong</h2>
+      </div>
+      <p class="error-modal-msg" id="error-modal-msg"></p>
+      <div class="error-modal-actions">
+        <button id="error-modal-ok" class="btn btn-roll">OK</button>
+      </div>
+    </div>
+  </div>
 
   <div id="angle-popover" class="angle-popover hidden">
     <label>Angle: <span id="angle-val">90</span>°</label>
@@ -80,7 +223,19 @@
     <button id="angle-done" class="btn">Done</button>
   </div>
 
+  <!-- Asset data first (avatars, generated dice), then the app modules in
+       dependency order: catalog/state are the foundation, then the feature
+       modules, then main.js wires events and boots the app. -->
+  <script src="avatars.js"></script>
   <script src="dice.js"></script>
-  <script src="app.js"></script>
+  <script src="catalog.js"></script>
+  <script src="state.js"></script>
+  <script src="circuit.js"></script>
+  <script src="roll.js"></script>
+  <script src="results.js"></script>
+  <script src="queue.js"></script>
+  <script src="latex.js"></script>
+  <script src="ai.js"></script>
+  <script src="main.js"></script>
 </body>
 </html>

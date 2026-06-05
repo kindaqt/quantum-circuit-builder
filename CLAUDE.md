@@ -1,15 +1,26 @@
 # Quantum Circuit Playground — Project Rules
 
-An interactive, browser-based quantum circuit builder. **FastAPI + Qiskit** backend
-(`backend/main.py`) builds a circuit from a JSON spec and simulates it; a
+An interactive, browser-based quantum circuit builder. A **FastAPI + Qiskit** backend
+(`backend/`) builds a circuit from a JSON spec and simulates it; a
 **dependency-free vanilla-JS** frontend (`frontend/`) is served as static files at `/`.
 Run it with `make run` or the preview server config **`quantum-playground`** (uvicorn,
 port 8533).
 
 ## Architecture at a glance
-- `backend/main.py` — validates a `CircuitSpec`, builds a `qiskit.QuantumCircuit`,
-  returns statevector / counts / Bloch results. Three run modes: `sim` (exact local
-  statevector), `qsim` (local Aer measurement, counts only), `quantum` (IBM Runtime).
+- **Backend is split into three modules** (entry point stays `backend.main:app`):
+  - `backend/core.py` — all domain logic: config, the gate whitelist + `validate()`,
+    `build_circuit`, the quantum run paths, personas, and the AI-explainer dispatch.
+    It validates a `CircuitSpec`, builds a `qiskit.QuantumCircuit`, and returns
+    statevector / counts / Bloch results. Three run modes: `sim` (classical:
+    exact statevector + Bloch, with the measurement histogram from a local Aer run
+    — falling back to sampling the exact distribution if Aer is missing), `qsim`
+    (local Aer measurement, counts only), `quantum` (IBM Runtime).
+  - `backend/api.py` — the FastAPI `app` and the four routes (`/explain`, `/config`,
+    `/simulate`, `/export`); a thin adapter that references everything as `core.<name>`
+    (so tests can monkeypatch `core.*` and the routes pick it up).
+  - `backend/main.py` — a thin shim: re-exports `api.app` (keeping `backend.main:app`)
+    and mirrors `core`'s public names for back-compat. Put new logic in `core`, new
+    endpoints in `api` — not here.
 - `frontend/app.js` — UI, drag-and-drop, palettes, results rendering. `ALGOS` and the
   dice are draggable **preset circuits**.
 - `frontend/dice.js` — **generated** by `backend/gen_dice.py`. Never hand-edit it.
