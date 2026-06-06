@@ -478,9 +478,13 @@ _TEACHING_CONTRACT = (
     "whole time — keep your persona's voice, mannerisms, and flavor — but never let the "
     "showmanship crowd out a clear, correct explanation.\n\n"
     "You are helping a curious student who knows the basics — qubits, the common gates, "
-    "superposition, and measurement — but is still building real intuition. Look at the "
-    "specific circuit the student built, together with its simulated measurement "
-    "outcome, and explain what the circuit does and why it produces that result.\n\n"
+    "superposition, and measurement — but is still building real intuition. They may ask "
+    "you to explain the specific circuit they built, or they may ask a broader question "
+    "about quantum computing — an algorithm, a concept, the hardware, the field. Help with "
+    "whatever they bring: when it is about their circuit, look at the circuit and its "
+    "simulated measurement outcome and explain what it does and why it produces that "
+    "result; when it is a general question, answer it fully and accurately on its own "
+    "terms.\n\n"
     "Teach, don't lecture. Start from what the student already knows and build up step "
     "by step. Walk through the circuit roughly in the order the gates act, narrating the "
     "story of the quantum state: where superposition is created, where phases are added, "
@@ -488,14 +492,16 @@ _TEACHING_CONTRACT = (
     "distribution you were given. Favor intuition and vivid, accurate analogies over "
     "heavy algebra; introduce only as much notation as you need to be precise, and define "
     "any term the moment you use it.\n\n"
-    "Ground every claim in the data provided. The gate list and the measurement outcomes "
-    "are the source of truth — explain those, and never invent gates, amplitudes, or "
-    "probabilities that aren't there. You may also be given the exact circuit as an "
-    "OpenQASM 3 listing; treat it as the precise, canonical definition of what was built "
-    "(its rotation angles are in radians, while the gate list states them in degrees), but "
-    "explain the physics in plain language rather than narrating QASM syntax to the student. "
-    "If the circuit is empty or trivial, say so plainly "
-    "and turn it into a small teaching moment. Remember that Qiskit is little-endian: in "
+    "When you are explaining their circuit, ground every claim in the data provided: the "
+    "gate list and the measurement outcomes are the source of truth — explain those, and "
+    "never invent gates, amplitudes, or probabilities that aren't there. For a general "
+    "question that isn't tied to the circuit, you needn't refer to it at all — answer from "
+    "your own expertise, and stay just as rigorous. You may also be given the exact circuit "
+    "as an OpenQASM 3 listing; treat it as the precise, canonical definition of what was "
+    "built (its rotation angles are in radians, while the gate list states them in degrees), "
+    "but explain the physics in plain language rather than narrating QASM syntax to the "
+    "student. If the student is asking about their circuit and it is empty or trivial, say "
+    "so plainly and turn it into a small teaching moment. Remember that Qiskit is little-endian: in "
     "every basis string the rightmost bit is qubit 0 and the leftmost is the highest-"
     "numbered qubit, so always be explicit about which qubit you mean. If a result comes "
     "from real hardware it is an estimate blurred by shot noise and device error — say so "
@@ -506,12 +512,14 @@ _TEACHING_CONTRACT = (
     "relevant, and where it fits, close with a small invitation to explore — one tweak the "
     "student could try next and what they should expect to see. Write in flowing prose "
     "without markdown headings.\n\n"
-    "Sometimes the student will ask a specific question about their circuit. When they do, "
-    "answer that question directly and concretely first, grounded in the gate list and the "
-    "outcome you were given, before adding any broader context. Stay on topic; if the "
-    "question can't be answered from the circuit and its results, say so honestly and "
-    "explain what would be needed. If they don't ask anything specific, give the overview "
-    "walkthrough described above.\n\n"
+    "Sometimes the student asks a specific question. When it is about their circuit, answer "
+    "it directly and concretely first, grounded in the gate list and the outcome you were "
+    "given, before adding any broader context. When it is a general quantum-computing "
+    "question, answer it fully and accurately, reaching for their circuit only if it makes a "
+    "helpful example. If the question is genuinely ambiguous — you can't tell what they are "
+    "really asking, or at what level — ask one short clarifying question before launching "
+    "into a full answer, rather than guessing. If they don't ask anything specific, give the "
+    "overview walkthrough of their circuit described above.\n\n"
     "This may be an ongoing back-and-forth: earlier turns of your conversation with the "
     "student are included above. When it's a follow-up, keep it brief and build directly on "
     "what you've already told them — answer the new question without re-explaining the whole "
@@ -527,6 +535,13 @@ try:
     from .personas import PERSONAS, DEFAULT_PERSONA
 except ImportError:  # pragma: no cover - top-level import path
     from personas import PERSONAS, DEFAULT_PERSONA
+
+# Curated quantum reference notes + TF-IDF retrieval. Same dual import path as personas:
+# package import under `backend.core`, top-level under pytest with backend/ on sys.path.
+try:
+    from . import knowledge
+except ImportError:  # pragma: no cover - top-level import path
+    import knowledge
 
 
 # A few personas are comedic and *deliberately unreliable* (flagged accurate=False).
@@ -607,22 +622,44 @@ def _circuit_summary(spec: CircuitSpec) -> str:
     return "\n".join(lines)
 
 
-def _build_prompt(spec: CircuitSpec, question: str | None) -> str:
-    """The full user message: the factual circuit summary, plus either the
-    student's specific question or a request for an overview walkthrough."""
-    summary = _circuit_summary(spec)
+def _persona_grounds(persona: str | None) -> bool:
+    """Whether to feed this persona the curated reference notes. The deliberately-
+    unreliable comedic personas (accurate=False) and Beaker (meeps only) are skipped:
+    correct facts are wasted on them by design, and we'd rather not spend the tokens."""
+    key = persona or DEFAULT_PERSONA
+    if key == "beaker":
+        return False
+    p = PERSONAS.get(key) or PERSONAS[DEFAULT_PERSONA]
+    return bool(p.get("accurate", True))
+
+
+def _build_prompt(spec: CircuitSpec, question: str | None, ground: bool = True) -> str:
+    """The full user message: optional reference notes (RAG), then the factual circuit
+    summary, then either the student's specific question or a request for an overview
+    walkthrough. The reference notes merge the gate/concept notes implied by the circuit
+    with the topic notes retrieved for a free-text question (so general questions get
+    grounded too). `ground` is False for the unreliable/meep personas, who get none."""
+    parts = []
+    if ground:
+        reference = knowledge.combined_reference_block(spec, question)
+        if reference:
+            parts.append(reference)
+    parts.append(_circuit_summary(spec))
     if question:
-        return (
-            f"{summary}\n\n"
+        parts.append(
             f"The student asks: {question}\n\n"
-            "Answer their question directly and specifically, grounded in the circuit "
-            "and outcomes above."
+            "Answer their question directly and accurately. If it is about this circuit, "
+            "ground your answer in the gate list and outcomes above; if it is a general "
+            "quantum-computing question, answer it fully on its own terms and refer to the "
+            "circuit only if it makes a helpful example. If the question is genuinely "
+            "ambiguous, ask one brief clarifying question first."
         )
-    return (
-        f"{summary}\n\n"
-        "Give the student a plain-language walkthrough of what this circuit does and why "
-        "it produces this distribution."
-    )
+    else:
+        parts.append(
+            "Give the student a plain-language walkthrough of what this circuit does and "
+            "why it produces this distribution."
+        )
+    return "\n\n".join(parts)
 
 
 def _call_anthropic(messages: list[dict], system: str, model: str, key: str) -> str:
@@ -803,7 +840,7 @@ def explain_circuit(spec: CircuitSpec, question: str | None = None,
     use_model = model or pconf["default_model"]
     # Prior turns first, then the latest circuit summary + question as a new user turn.
     messages = list(history or [])
-    messages.append({"role": "user", "content": _build_prompt(spec, question)})
+    messages.append({"role": "user", "content": _build_prompt(spec, question, _persona_grounds(persona))})
     return handler(messages, _system_prompt(persona), use_model, pconf["key"])
 
 

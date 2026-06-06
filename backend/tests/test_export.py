@@ -104,6 +104,42 @@ class TestCircuitSummary:
 
 
 # --------------------------------------------------------------------------- #
+# _build_prompt(): tutor-mode assembly — reference notes + summary + the right ask
+# --------------------------------------------------------------------------- #
+class TestBuildPrompt:
+    """The user message wraps the grounded summary with either the student's
+    question or an overview request, and prepends the RAG reference block only
+    when `ground` is set (the unreliable/meep personas pass ground=False)."""
+
+    def test_no_question_asks_for_an_overview_walkthrough(self):
+        p = core._build_prompt(spec(2, [{"name": "h", "qubits": [0]},
+                                        {"name": "cx", "qubits": [0, 1]}]), None)
+        assert "Gates in order" in p           # the grounded summary is present
+        assert "walkthrough" in p.lower()      # default = overview of the circuit
+
+    def test_general_question_invites_a_standalone_answer(self):
+        # A broad, non-circuit question: tutor mode must allow answering it fully
+        # on its own terms, not force everything back onto the live circuit.
+        p = core._build_prompt(spec(1, []), "What is quantum entanglement?")
+        assert "What is quantum entanglement?" in p
+        assert "general" in p.lower()          # the general-question branch fired
+        assert "on its own terms" in p
+        assert "clarifying question" in p.lower()
+
+    def test_grounding_prepends_the_reference_block(self):
+        p = core._build_prompt(spec(1, [{"name": "h", "qubits": [0]}]),
+                               None, ground=True)
+        assert p.startswith("Reference notes")  # RAG block leads the message
+
+    def test_ungrounded_prompt_omits_the_reference_block(self):
+        # Unreliable/meep personas (ground=False) get no curated notes.
+        p = core._build_prompt(spec(1, [{"name": "h", "qubits": [0]}]),
+                               None, ground=False)
+        assert not p.startswith("Reference notes")
+        assert "Gates in order" in p            # but still gets the real summary
+
+
+# --------------------------------------------------------------------------- #
 # _quantum_target_label(): short, secret-free label for the UI
 # --------------------------------------------------------------------------- #
 class TestQuantumTargetLabel:

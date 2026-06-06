@@ -220,8 +220,17 @@ reach a real device.
 
 Enable a **Professor** tab — a friendly quantum-computing instructor that explains,
 in plain language, what the current circuit does and why it produces its
-distribution. You can also type a specific question (e.g. "why are only even
-outcomes showing up?") and the Professor answers it grounded in your circuit. The
+distribution. You can also ask it **anything about quantum computing** — not just
+the circuit on the canvas. Ask about the circuit (e.g. "why are only even outcomes
+showing up?") and the answer is grounded in your live gate list and outcomes; ask a
+broader question (an algorithm, a concept, the hardware) and it answers fully on its
+own terms, reaching for your circuit only when it makes a helpful example. When a
+question is genuinely ambiguous it asks one short clarifying question first. To keep
+answers accurate, a small **curated reference set** is pulled into the prompt: the
+gates and foundational concepts implied by your circuit (a direct lookup) plus, for a
+free-text question, the most relevant notes on algorithms, concepts, and hardware
+found by an **offline TF-IDF retriever** — no embeddings, no extra requests, and it
+stays quiet when nothing in the set is relevant. The
 **conversation is remembered**, so you can ask follow-ups; press **Clear chat** to
 start fresh. Every exchange keeps a **thumbnail of the circuit** it was about
 (snapshotted when you asked, so later edits don't change it — click to enlarge)
@@ -320,15 +329,18 @@ is read from `.env` only — it is never returned by `/config` or `/explain`.
 There are two suites — `make test` runs both, or run one with `make test-backend`
 / `make test-frontend`.
 
-**Backend** — a [pytest](https://docs.pytest.org) suite under `backend/` covers the
+**Backend** — a [pytest](https://docs.pytest.org) suite under `backend/tests/` covers the
 security boundary (gate whitelist + resource bounds in `validate`), circuit
 correctness — including Qiskit's little-endian convention — the AI provider and
 persona registries, the export/codegen helpers (Qiskit + OpenQASM 3, angle
-formatting, the grounded explainer prompt), and the HTTP endpoints (`/config`,
-`/simulate`, `/export`, `/explain`). It is split by concern: `test_core.py` and
-`test_export.py` exercise the domain logic in `backend/core.py` directly, while
-`test_api.py` drives the FastAPI routes through a `TestClient` (shared fixtures
-live in `conftest.py`). The tests never make a real network, LLM, or quantum call:
+formatting, the grounded explainer prompt), the curated reference set behind the
+explainer (every whitelisted gate has a note; retrieval pulls the right notes,
+always includes the foundational concepts, dedupes, and stays within its size
+bounds), and the HTTP endpoints (`/config`, `/simulate`, `/export`, `/explain`). It
+is split by concern: `test_core.py` and `test_export.py` exercise the domain logic
+in `backend/core.py` directly, `test_knowledge.py` covers the reference set and
+retrieval in `backend/knowledge.py`, while `test_api.py` drives the FastAPI routes
+through a `TestClient` (shared fixtures live in `conftest.py`). The tests never make a real network, LLM, or quantum call:
 the `/explain` cases exercise the validation paths that run *before* any provider
 is contacted (or dispatch through a fake handler), and a key check asserts no API
 key ever appears in `/config`.

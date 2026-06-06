@@ -21,6 +21,13 @@ port 8533).
   - `backend/main.py` — a thin shim: re-exports `api.app` (keeping `backend.main:app`)
     and mirrors `core`'s public names for back-compat. Put new logic in `core`, new
     endpoints in `api` — not here.
+  - `backend/knowledge.py` — the explainer's curated RAG corpus + retrieval (no LLM,
+    no embeddings, NumPy only). `GATE_NOTES`/`CONCEPT_NOTES` ground a circuit by
+    structured gate lookup; `TOPIC_NOTES` (algorithms/concepts/hardware) ground a
+    free-text question via an offline TF-IDF retriever (`retrieve_topics`) tuned and
+    regression-tested against `EVAL_CASES`. `core._build_prompt` injects the merge via
+    `combined_reference_block`. Corpus is hand-authored — keep it truthful; every
+    whitelisted gate must have a note (a test enforces it).
 - `frontend/app.js` — UI, drag-and-drop, palettes, results rendering. `ALGOS` and the
   dice are draggable **preset circuits**.
 - `frontend/dice.js` — **generated** by `backend/gen_dice.py`. Never hand-edit it.
