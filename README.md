@@ -113,12 +113,93 @@ custom caricature avatar.](docs/screenshot.png)
   error dialog instead of failing silently, and recoverable problems (a missing
   `/config`, a one-off `/simulate` hiccup) leave the rest of the app working.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    Browser["<b>Browser</b><br/>vanilla JS, no build step<br/>circuit builder · drag &amp; drop · results · Professor chat"]
+
+    subgraph Backend["FastAPI backend &nbsp;(<code>backend.main:app</code>)"]
+        direction TB
+        API["<b>api.py</b> — HTTP routes<br/>/simulate · /export · /explain · /config · /health"]
+        Core["<b>core.py</b> — domain logic<br/>validate() + gate whitelist · build_circuit<br/>run modes · personas · LLM dispatch"]
+        Know["<b>knowledge.py</b> — RAG<br/>NumPy TF-IDF retriever + structured gate notes"]
+        DB["<b>db.py</b> — optional Postgres layer<br/>lazy psycopg · graceful degradation"]
+        API --> Core
+        Core --> Know
+        API --> DB
+    end
+
+    Sim["<b>Qiskit / Aer</b><br/>exact statevector + shot sampling"]
+    HW["<b>IBM Runtime / AWS Braket</b><br/>real hardware (flag-gated)"]
+    LLM["<b>LLM providers</b><br/>Claude · Gemini · ChatGPT · local Ollama"]
+    PG[("<b>Postgres + pgvector</b><br/>learner profiles · sessions · quizzes<br/>embeddings (planned, step d)")]
+
+    Browser -->|JSON over HTTP| API
+    Core --> Sim
+    Core -.->|gated, explicit action| HW
+    Core -->|explain / Q&amp;A| LLM
+    DB --> PG
+    Know -.->|hybrid lexical+dense recall<br/>(planned)| PG
+```
+
+**Components**
+
+- **Browser (`frontend/`)** — a dependency-free vanilla-JS UI (no npm, no build
+  step). It builds a circuit spec, posts it as JSON, and renders the results and
+  the Professor chat. The same `.js` files the browser runs are what the tests load.
+- **`backend/api.py`** — the FastAPI app: thin HTTP routes that validate the wire
+  format and delegate to `core`. Everything is referenced as `core.<name>` so tests
+  can monkeypatch the domain layer.
+- **`backend/core.py`** — all domain logic: the **gate whitelist + `validate()`**
+  (the security boundary), `build_circuit`, the three run modes (`sim` / `qsim` /
+  `quantum`), the persona registry, and the LLM-explainer dispatch.
+- **`backend/knowledge.py`** — the explainer's retrieval-augmented grounding: an
+  offline **TF-IDF** retriever (pure NumPy) over a hand-authored corpus plus
+  structured per-gate notes, merged into the prompt. No LLM, no embeddings.
+- **`backend/db.py` + `backend/migrations/`** — the **optional** Postgres layer
+  behind the tutor's memory features (profiles, sessions, quizzes; pgvector recall
+  later). It degrades gracefully — the core app never depends on a database.
+- **External services** — Qiskit/Aer run locally; IBM Runtime / Braket are
+  flag-gated and only fire on explicit user action; the LLM providers are pluggable
+  (cloud or local Ollama); Postgres runs in Docker (`docker-compose.yml`).
+
+**Key decisions & why**
+
+- **Three-module backend split (`core` / `api` / `main`).** Domain logic is testable
+  without HTTP and the routes stay thin; `main` only re-exports `app` so the
+  long-standing `backend.main:app` entry point never breaks.
+- **Dependency-free frontend.** No build step or framework means anyone can clone
+  and run it, and the browser code is unit-tested as-is — a deliberate
+  "runs-anywhere" constraint for a portfolio project.
+- **The gate whitelist is the security boundary.** `build_circuit` dispatches
+  `getattr(qc, name)(*args)`, which is only safe because `validate()` rejects any
+  gate not on the allow-list and enforces the `MAX_*` resource bounds.
+- **RAG without a vector database first.** Lexical TF-IDF in NumPy is zero-dependency,
+  offline, and regression-tested for recall — good grounding on its own. Dense
+  embeddings + **pgvector** are added on top to enable *semantic* and *hybrid*
+  retrieval (the showcase technique), not as a replacement.
+- **Postgres is optional and isolated in `db.py`.** psycopg is imported lazily and
+  every failure path (no driver, no URL, server down) degrades to "memory features
+  unavailable" — building/simulating/explaining never require a database.
+- **pgvector over a separate vector store.** One Postgres instance serves both the
+  relational tables and the embedding columns, so there's no second datastore to run.
+- **Embeddings via a local library (planned).** Embeddings are produced **in-process
+  by a small local encoder library** (e.g. `fastembed` / `sentence-transformers`) —
+  free, private, offline, and reproducible for reviewers, with no API key, no network,
+  and no separate server. A cloud embedding API is an unused escape hatch, not a
+  default. (The *chat* LLM stays cloud-capable since Claude has no embeddings endpoint,
+  but that's a separate concern.) Generating an embedding needs an encoder model —
+  *not* a generative LLM, and *not* Postgres, which only stores and searches the vectors.
+
 ## Requirements
 
 - Python 3.10+
 - `make` (optional but recommended)
 - Node 18+ (optional — only to run the frontend test suite; the app itself ships
   no JS toolchain)
+- Docker (optional — only for the bundled Postgres behind the tutor's memory
+  features; the core app runs without it)
 
 ## Getting started
 
@@ -169,6 +250,9 @@ Copy `.env.sample` to `.env` to override any of these (defaults shown):
 | `QCB_AI_API_KEY`  | *(empty)*   | API key for the chosen provider (kept out of `/config`). |
 | `QCB_PROVIDER_<NAME>` | `false` | Multi-provider mode: toggle `ANTHROPIC`/`GEMINI`/`OPENAI`/`LLAMA` on; each then reads `QCB_<NAME>_API_KEY`/`_MODEL`/`_MODELS`. |
 | `QCB_AI_LLAMA_HOST` | `http://localhost:11434` | Ollama server (llama provider). |
+| `QCB_DATABASE_URL` | *(empty)*  | Postgres DSN for the optional memory features; unset = run without a DB. |
+| `QCB_DB_USER` / `QCB_DB_PASSWORD` / `QCB_DB_NAME` | `qcb` | Credentials for the bundled `docker compose` Postgres. |
+| `QCB_DB_PORT`     | `5432`      | Host port for the bundled Postgres (change to avoid clashing). |
 
 The `QCB_MAX_*` limits are enforced by the backend to bound resource use —
 statevector simulation grows exponentially with the qubit count.
@@ -312,6 +396,28 @@ list, the exact circuit as OpenQASM 3, and the real outcome distribution (plus
 your question and prior conversation), so the answer stays grounded. Every API key
 is read from `.env` only — it is never returned by `/config` or `/explain`.
 
+### Tutor memory (optional Postgres)
+
+The core playground — building, simulating, and explaining circuits — needs no
+database. An optional **Postgres** layer backs the tutor's *memory* features
+(learner profiles, study sessions, and quizzes; semantic recall via `pgvector`
+comes later). Leave `QCB_DATABASE_URL` unset to run fully in-memory: the memory
+features then report themselves unavailable (HTTP 503) and everything else works.
+
+To enable it you need **Docker** (for the bundled Postgres) — or point
+`QCB_DATABASE_URL` at any Postgres you already run.
+
+```bash
+make db-up        # start Postgres (pgvector image) with the .env credentials
+make migrate      # apply the schema (Alembic, plain-SQL migrations)
+make run          # the Professor's memory features are now live
+```
+
+`GET /health` reports the database status (`driver` installed, `configured`,
+`healthy`) — handy for confirming `db-up`/`migrate` worked. The schema lives in
+`backend/migrations/`; connections and graceful degradation live in
+`backend/db.py`.
+
 ## Make targets
 
 | Target         | Description                                  |
@@ -319,6 +425,10 @@ is read from `.env` only — it is never returned by `/config` or `/explain`.
 | `make install` | Create `.venv` and install dependencies.     |
 | `make run`     | Start the server.                            |
 | `make dev`     | Start with auto-reload.                      |
+| `make db-up`   | Start the optional Postgres container.       |
+| `make db-down` | Stop it (the data volume is kept).           |
+| `make db-logs` | Tail the Postgres container logs.            |
+| `make migrate` | Apply database migrations (Alembic).         |
 | `make test`    | Run **all** tests (backend + frontend).      |
 | `make test-backend`  | Run only the backend (pytest) tests.   |
 | `make test-frontend` | Run only the frontend (`node --test`) tests. |
@@ -340,7 +450,11 @@ bounds), and the HTTP endpoints (`/config`, `/simulate`, `/export`, `/explain`).
 is split by concern: `test_core.py` and `test_export.py` exercise the domain logic
 in `backend/core.py` directly, `test_knowledge.py` covers the reference set and
 retrieval in `backend/knowledge.py`, while `test_api.py` drives the FastAPI routes
-through a `TestClient` (shared fixtures live in `conftest.py`). The tests never make a real network, LLM, or quantum call:
+through a `TestClient` (shared fixtures live in `conftest.py`), and `test_db.py`
+covers the optional Postgres layer — its graceful-degradation contract (no driver
+or no `QCB_DATABASE_URL` → memory features simply report unavailable, never crash)
+runs everywhere, while the live round-trip tests skip unless a migrated database
+is reachable. The tests never make a real network, LLM, or quantum call:
 the `/explain` cases exercise the validation paths that run *before* any provider
 is contacted (or dispatch through a fake handler), and a key check asserts no API
 key ever appears in `/config`.

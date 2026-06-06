@@ -1,0 +1,31 @@
+# Local Postgres for the tutor's memory features (learner profiles, study
+# sessions, quizzes, and — later — pgvector semantic recall). The core app
+# (build/simulate/explain) runs fine without this; only the memory features
+# need it. Bring it up with `make db-up` (or `docker compose up -d db`), then
+# apply the schema with `make migrate`.
+#
+# The pgvector image is plain Postgres with the `vector` extension available,
+# so the same container serves today's relational tables and the future
+# embedding columns without a swap.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: qcb-postgres
+    environment:
+      POSTGRES_USER: ${QCB_DB_USER:-qcb}
+      POSTGRES_PASSWORD: ${QCB_DB_PASSWORD:-qcb}
+      POSTGRES_DB: ${QCB_DB_NAME:-qcb}
+    ports:
+      # Host port is overridable so this won't clash with a Postgres you already
+      # run on 5432. Connection string lives in .env (QCB_DATABASE_URL).
+      - "${QCB_DB_PORT:-5432}:5432"
+    volumes:
+      - qcb_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${QCB_DB_USER:-qcb} -d ${QCB_DB_NAME:-qcb}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  qcb_pgdata:

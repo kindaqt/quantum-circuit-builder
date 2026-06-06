@@ -1,4 +1,4 @@
-.PHONY: help install run dev test test-backend test-frontend clean
+.PHONY: help install run dev test test-backend test-frontend clean db-up db-down db-logs migrate
 
 # Load .env if present (HOST, PORT, QCB_MAX_*) and export to child processes.
 ifneq (,$(wildcard .env))
@@ -10,6 +10,7 @@ VENV    := .venv
 PY      := $(VENV)/bin/python
 PIP     := $(VENV)/bin/pip
 UVICORN := $(VENV)/bin/uvicorn
+ALEMBIC := $(VENV)/bin/alembic
 HOST    ?= 127.0.0.1
 PORT    ?= 8533
 
@@ -37,6 +38,18 @@ test-backend: install  ## Run the backend test suite (pytest)
 
 test-frontend:       ## Run the frontend test suite (node --test, no npm)
 	node --test frontend/tests/*.test.mjs
+
+db-up:               ## Start the Postgres container (optional memory features)
+	docker compose up -d db
+
+db-down:             ## Stop the Postgres container (keeps the data volume)
+	docker compose down
+
+db-logs:             ## Tail the Postgres container logs
+	docker compose logs -f db
+
+migrate: install     ## Apply database migrations (needs db-up + QCB_DATABASE_URL)
+	$(ALEMBIC) upgrade head
 
 clean:               ## Remove the virtualenv and Python caches
 	rm -rf $(VENV)

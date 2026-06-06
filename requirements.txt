@@ -16,5 +16,14 @@ qiskit-ibm-runtime>=0.20
 # AI circuit-explainer feature (QCB_ENABLE_AI). Only needed when the explainer
 # is enabled; lazily imported so the app runs without it otherwise.
 anthropic>=0.40
+# Tutor memory features (learner profiles, sessions, quizzes). Optional: the
+# core playground runs without a database — backend/db.py imports psycopg lazily
+# and degrades gracefully when it's absent or no QCB_DATABASE_URL is set. The
+# [binary] extra pulls in a prebuilt libpq so no system Postgres dev headers are
+# needed.
+psycopg[binary]>=3.1
+# Schema migrations for the memory tables (`make migrate`). Migrations are plain
+# SQL run through Alembic's versioning; no ORM models.
+alembic>=1.13
 # Test suite (`make test`). Dev-only; not needed to run the app.
 pytest>=8.0

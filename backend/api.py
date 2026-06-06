@@ -21,9 +21,10 @@ from pydantic import BaseModel
 # this as ``backend.api``) and as a top-level module (pytest puts ``backend/`` on
 # sys.path and imports ``core`` directly).
 try:
-    from . import core
+    from . import core, db
 except ImportError:  # pragma: no cover - exercised by the top-level import path
     import core
+    import db
 
 
 app = FastAPI(title="Quantum Circuit Playground")
@@ -130,6 +131,17 @@ def config():
         # simulate (statevector cost is exponential, so this stays bounded).
         "max_qubits": core.MAX_QUBITS,
     }
+
+
+@app.get("/health")
+def health():
+    """Liveness + optional-database status.
+
+    The app is always 'ok' (the core playground needs no database); the `db`
+    block reports whether the optional memory layer is wired up and reachable,
+    which is what `make db-up` / `make migrate` and manual testing check.
+    """
+    return {"status": "ok", "db": db.status()}
 
 
 @app.post("/simulate")

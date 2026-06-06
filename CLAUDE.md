@@ -28,6 +28,14 @@ port 8533).
     regression-tested against `EVAL_CASES`. `core._build_prompt` injects the merge via
     `combined_reference_block`. Corpus is hand-authored — keep it truthful; every
     whitelisted gate must have a note (a test enforces it).
+  - `backend/db.py` — the **optional** Postgres layer behind the tutor's memory
+    features (learner profiles, study sessions, quizzes; pgvector recall later).
+    psycopg is imported lazily and connections degrade gracefully: no driver, no
+    `QCB_DATABASE_URL`, or an unreachable server all make `db.healthy()` return
+    False rather than raise — the core app never depends on a database. Schema is
+    Alembic plain-SQL migrations in `backend/migrations/` (`make migrate`); Postgres
+    runs via `docker-compose.yml` (pgvector image, `make db-up`). `GET /health`
+    reports `db.status()`.
 - `frontend/app.js` — UI, drag-and-drop, palettes, results rendering. `ALGOS` and the
   dice are draggable **preset circuits**.
 - `frontend/dice.js` — **generated** by `backend/gen_dice.py`. Never hand-edit it.
