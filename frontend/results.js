@@ -50,6 +50,9 @@ async function runSim(mode = state.runMode, { toQueue = false } = {}) {
     }
     const data = await res.json();
     renderResults(data);
+    // Trigger auto-explain whenever a simulation completes (the sig-dedup inside
+    // maybeAutoExplain() ensures we only explain circuits that actually changed).
+    maybeAutoExplain();
     // Only an explicit Run press records the circuit + result in the queue.
     if (toQueue) {
       recordClassicalRun(snap, payload.num_qubits, payload.shots, sig, data);

@@ -96,7 +96,10 @@ window.addEventListener("error", (e) => {
 });
 $("provider-select").addEventListener("change", (e) => applyProvider(e.target.value));
 $("model-select").addEventListener("change", (e) => applyModel(e.target.value));
-$("explain-q").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); askProfessor(); } });
+$("explain-q").addEventListener("keydown", (e) => {
+  // Enter sends; Shift+Enter inserts a newline (standard chat behaviour for a textarea).
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askProfessor(); }
+});
 
 // Results tabs: clicking a tab activates its panel.
 document.querySelectorAll(".tab").forEach((tab) => {

@@ -25,5 +25,11 @@ psycopg[binary]>=3.1
 # Schema migrations for the memory tables (`make migrate`). Migrations are plain
 # SQL run through Alembic's versioning; no ORM models.
 alembic>=1.13
+# Semantic recall for the tutor's long-term memory (pgvector + hybrid retrieval).
+# Lazily loaded — the app runs without it; only interaction embeddings and
+# semantic search are unavailable when the package is absent or the model
+# hasn't been downloaded yet. The model (~90 MB, all-MiniLM-L6-v2) is cached
+# by sentence-transformers on first use.
+sentence-transformers>=2.7
 # Test suite (`make test`). Dev-only; not needed to run the app.
 pytest>=8.0

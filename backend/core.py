@@ -8,8 +8,10 @@ import from this module; main.py re-exports the app so `backend.main:app` and
 `import main` both keep working.
 """
 
+import json
 import math
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -571,17 +573,54 @@ _MEEP_CONTRACT = (
 )
 
 
-def _system_prompt(persona: str | None) -> str:
-    """Assemble the full system prompt for a persona key: its voice followed by the
-    appropriate contract. Unknown/None keys fall back to the default professor; the
-    rare comedic persona (accurate=False) gets the unreliable contract instead.
-    Beaker is special-cased: he only ever meeps, so he gets the meep contract."""
+# Standing context about the student, injected into the system prompt so the tutor
+# can pitch every answer at the right level. Built from the stored learner profile;
+# only the accurate personas receive it (see _system_prompt).
+_PROFILE_HEADER = (
+    "What you know about this student so far (use it to pitch your explanations at the "
+    "right level and connect to what they care about — don't recite it back to them):"
+)
+_PROFILE_LABELS = (
+    ("level", "Self-described level"),
+    ("background", "Background"),
+    ("interests", "Interests"),
+    ("goals", "Goals"),
+)
+
+
+def _profile_block(profile: dict | None) -> str:
+    """Render a stored learner profile as a short context block, or '' if empty."""
+    if not profile:
+        return ""
+    lines = []
+    name = (profile.get("display_name") or "").strip()
+    if name:
+        lines.append(f"- Name: {name}")
+    for key, label in _PROFILE_LABELS:
+        val = (profile.get(key) or "").strip()
+        if val:
+            lines.append(f"- {label}: {val}")
+    if not lines:
+        return ""
+    return "\n".join([_PROFILE_HEADER] + lines)
+
+
+def _system_prompt(persona: str | None, profile: dict | None = None) -> str:
+    """Assemble the full system prompt for a persona key: its voice, the appropriate
+    contract, and (for accurate personas) any known learner profile. Unknown/None
+    keys fall back to the default professor; the rare comedic persona (accurate=False)
+    gets the unreliable contract instead. Beaker is special-cased: he only meeps."""
     key = persona or DEFAULT_PERSONA
     if key == "beaker":
         return f"{PERSONAS['beaker']['voice']}\n\n{_MEEP_CONTRACT}"
     p = PERSONAS.get(key) or PERSONAS[DEFAULT_PERSONA]
-    contract = _TEACHING_CONTRACT if p.get("accurate", True) else _UNRELIABLE_CONTRACT
-    return f"{p['voice']}\n\n{contract}"
+    accurate = p.get("accurate", True)
+    parts = [p["voice"], _TEACHING_CONTRACT if accurate else _UNRELIABLE_CONTRACT]
+    if accurate:
+        block = _profile_block(profile)
+        if block:
+            parts.append(block)
+    return "\n\n".join(parts)
 
 
 def _circuit_summary(spec: CircuitSpec) -> str:
@@ -633,12 +672,30 @@ def _persona_grounds(persona: str | None) -> bool:
     return bool(p.get("accurate", True))
 
 
-def _build_prompt(spec: CircuitSpec, question: str | None, ground: bool = True) -> str:
+# Session-start intake: instead of explaining a circuit, the persona welcomes the
+# student and asks a few calibration questions. Their free-text answer is later turned
+# into a structured profile by extract_profile().
+_ONBOARDING_INSTRUCTION = (
+    "This is the very start of a new tutoring session and you don't know this student yet. "
+    "In your persona's voice, give them a brief, warm welcome and ask a few short questions to "
+    "calibrate how you'll teach them: how much quantum computing they already know (their level), "
+    "their background in math, physics, and programming, and what they're hoping to learn or any "
+    "goals they have — plus anything else you think will help you teach them well. Ask it "
+    "conversationally in one short message, and don't explain any circuit or dive into content "
+    "yet — just get to know them."
+)
+
+
+def _build_prompt(spec: CircuitSpec, question: str | None, ground: bool = True,
+                  onboarding: bool = False) -> str:
     """The full user message: optional reference notes (RAG), then the factual circuit
     summary, then either the student's specific question or a request for an overview
     walkthrough. The reference notes merge the gate/concept notes implied by the circuit
     with the topic notes retrieved for a free-text question (so general questions get
-    grounded too). `ground` is False for the unreliable/meep personas, who get none."""
+    grounded too). `ground` is False for the unreliable/meep personas, who get none.
+    When `onboarding` is set, skip the circuit entirely and ask the intake questions."""
+    if onboarding:
+        return _ONBOARDING_INSTRUCTION
     parts = []
     if ground:
         reference = knowledge.combined_reference_block(spec, question)
@@ -825,11 +882,190 @@ _AI_PROVIDERS = {
 }
 
 
+# ---- Streaming providers: one generator per provider, yield text chunks -----
+# Each handler is a *generator* (yields str chunks). The SSE route wraps them in
+# a StreamingResponse. When a provider has no streaming handler, explain_circuit_stream
+# falls back to calling the regular handler and yielding the whole text at once.
+
+def _stream_anthropic(messages: list[dict], system: str, model: str, key: str):
+    """Yield text chunks from the Anthropic messages streaming API."""
+    try:
+        import anthropic
+    except ImportError:
+        raise HTTPException(503, "The 'anthropic' package is not installed (pip install anthropic)")
+    client = anthropic.Anthropic(api_key=key)
+    try:
+        with client.messages.stream(
+            model=model,
+            max_tokens=1024,
+            system=system,
+            messages=messages,
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+    except anthropic.AuthenticationError:
+        raise HTTPException(502, "The AI provider rejected the configured API key.")
+    except anthropic.APIStatusError as e:
+        raise HTTPException(502, f"The AI provider returned an error (HTTP {e.status_code}).")
+
+
+def _stream_gemini(messages: list[dict], system: str, model: str, key: str):
+    """Yield text chunks from Gemini's streamGenerateContent SSE endpoint."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    contents = [
+        {
+            "role": ("model" if m["role"] == "assistant" else "user"),
+            "parts": [{"text": m["content"]}],
+        }
+        for m in messages
+    ]
+    body = _json.dumps({
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": contents,
+    }).encode()
+    req = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
+        ":streamGenerateContent?alt=sse",
+        data=body,
+        headers={"Content-Type": "application/json", "x-goog-api-key": key},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8").rstrip()
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    chunk = _json.loads(line[6:])
+                    parts = chunk["candidates"][0]["content"]["parts"]
+                    text = "".join(p.get("text", "") for p in parts)
+                    if text:
+                        yield text
+                except (KeyError, IndexError, _json.JSONDecodeError):
+                    pass
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 401, 403):
+            raise HTTPException(502, "The AI provider rejected the configured API key or model.")
+        raise HTTPException(502, f"The Gemini API returned an error (HTTP {e.code}).")
+    except urllib.error.URLError:
+        raise HTTPException(503, "Couldn't reach the Gemini API. Check your network connection.")
+
+
+def _stream_openai(messages: list[dict], system: str, model: str, key: str):
+    """Yield text chunks from OpenAI's streaming chat completions endpoint."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    body = _json.dumps({
+        "model": model,
+        "messages": [{"role": "system", "content": system}, *messages],
+        "max_tokens": 1024,
+        "stream": True,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8").rstrip()
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = _json.loads(payload)
+                    delta = (chunk["choices"][0]["delta"].get("content") or "")
+                    if delta:
+                        yield delta
+                except (KeyError, IndexError, _json.JSONDecodeError):
+                    pass
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 401, 403):
+            raise HTTPException(502, "The AI provider rejected the configured API key or model.")
+        raise HTTPException(502, f"The OpenAI API returned an error (HTTP {e.code}).")
+    except urllib.error.URLError:
+        raise HTTPException(503, "Couldn't reach the OpenAI API. Check your network connection.")
+
+
+def _stream_llama(messages: list[dict], system: str, model: str, key: str):
+    """Yield text chunks from a local Ollama server with streaming NDJSON."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    body = _json.dumps({
+        "model": model,
+        "messages": [{"role": "system", "content": system}, *messages],
+        "stream": True,
+    }).encode()
+    req = urllib.request.Request(
+        f"{AI_LLAMA_HOST}/api/chat",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8").strip()
+                if not line:
+                    continue
+                try:
+                    chunk = _json.loads(line)
+                    content = chunk.get("message", {}).get("content", "")
+                    if content:
+                        yield content
+                    if chunk.get("done"):
+                        break
+                except _json.JSONDecodeError:
+                    pass
+    except urllib.error.HTTPError as e:
+        detail = (
+            "the model isn't available — try `ollama pull %s`" % model
+            if e.code == 404
+            else f"HTTP {e.code}"
+        )
+        raise HTTPException(502, f"The local Llama server returned an error ({detail}).")
+    except TimeoutError:
+        raise HTTPException(
+            504,
+            f"The local Llama model ({model}) took too long to respond. It may "
+            "still be loading — try again in a moment, or use a smaller model.",
+        )
+    except urllib.error.URLError:
+        raise HTTPException(
+            503,
+            f"Couldn't reach a local Llama server at {AI_LLAMA_HOST}. "
+            "Is Ollama running (`ollama serve`)?",
+        )
+
+
+# provider name -> streaming generator handler (yields str chunks).
+_AI_STREAM_PROVIDERS = {
+    "anthropic": _stream_anthropic,
+    "llama": _stream_llama,
+    "gemini": _stream_gemini,
+    "openai": _stream_openai,
+}
+
+
 def explain_circuit(spec: CircuitSpec, question: str | None = None,
                     history: list[dict] | None = None,
                     persona: str | None = None,
                     provider: str | None = None,
-                    model: str | None = None) -> str:
+                    model: str | None = None,
+                    profile: dict | None = None,
+                    onboarding: bool = False) -> str:
     name = provider or default_provider()
     if not name or not provider_ready(name):
         raise HTTPException(403, "That AI provider is not available.")
@@ -838,10 +1074,429 @@ def explain_circuit(spec: CircuitSpec, question: str | None = None,
         raise HTTPException(503, f"Unknown AI provider '{name}' (supported: {', '.join(_AI_PROVIDERS)})")
     pconf = PROVIDERS[name]
     use_model = model or pconf["default_model"]
+    ground = _persona_grounds(persona)
     # Prior turns first, then the latest circuit summary + question as a new user turn.
     messages = list(history or [])
-    messages.append({"role": "user", "content": _build_prompt(spec, question, _persona_grounds(persona))})
-    return handler(messages, _system_prompt(persona), use_model, pconf["key"])
+    messages.append({"role": "user", "content": _build_prompt(spec, question, ground, onboarding)})
+    # The learner profile is standing context, so it rides in the system prompt — and
+    # only for personas that ground (the unreliable/meep ones don't get it).
+    return handler(messages, _system_prompt(persona, profile if ground else None), use_model, pconf["key"])
+
+
+def explain_circuit_stream(
+    spec: CircuitSpec,
+    question: str | None = None,
+    history: list[dict] | None = None,
+    persona: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    profile: dict | None = None,
+    onboarding: bool = False,
+):
+    """Streaming variant of explain_circuit — yields text chunks instead of
+    returning the full response.
+
+    For providers that have a streaming handler (all four), text arrives
+    token-by-token.  A provider with no entry in _AI_STREAM_PROVIDERS falls
+    back to the regular non-streaming handler and yields the whole response
+    as a single chunk, so the SSE route still works correctly.
+    """
+    name = provider or default_provider()
+    if not name or not provider_ready(name):
+        raise HTTPException(403, "That AI provider is not available.")
+    pconf = PROVIDERS[name]
+    use_model = model or pconf["default_model"]
+    ground = _persona_grounds(persona)
+    messages = list(history or [])
+    messages.append({"role": "user", "content": _build_prompt(spec, question, ground, onboarding)})
+    system = _system_prompt(persona, profile if ground else None)
+
+    stream_handler = _AI_STREAM_PROVIDERS.get(name)
+    if stream_handler is None:
+        # Fallback: regular handler → single chunk.
+        handler = _AI_PROVIDERS.get(name)
+        if handler is None:
+            raise HTTPException(
+                503,
+                f"Unknown AI provider '{name}' (supported: {', '.join(_AI_PROVIDERS)})",
+            )
+        yield handler(messages, system, use_model, pconf["key"])
+        return
+
+    yield from stream_handler(messages, system, use_model, pconf["key"])
+
+
+# ---- Structured-output extraction: free-text intake -> learner profile ------
+_EXTRACTION_SYSTEM = (
+    "You extract a learner profile from what a student tells a quantum-computing tutor about "
+    "themselves. Respond with ONLY a single JSON object — no prose, no markdown fences — with "
+    'exactly these string keys: "level", "background", "interests", "goals". '
+    '"level" is their self-described experience with quantum computing (e.g. "complete beginner", '
+    '"knows the basic gates", "physics grad student"); "background" is their math/physics/'
+    'programming background; "interests" is the topics or applications they care about; "goals" '
+    "is what they want to learn or achieve. Use an empty string for any field the student didn't "
+    "address. Keep each value concise — a phrase or a short sentence — and never invent details "
+    "they did not give."
+)
+_PROFILE_KEYS = ("level", "background", "interests", "goals")
+
+
+def _parse_json_object(text: str) -> dict:
+    """Best-effort parse of a JSON object from a model reply, tolerating prose or
+    markdown fences around it. Returns {} if nothing parseable is found."""
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            parsed = json.loads(match.group(0))
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            pass
+    return {}
+
+
+def extract_profile(answer_text: str, provider: str | None = None,
+                    model: str | None = None) -> dict:
+    """Turn a student's free-text intake answer into a structured profile via the
+    configured LLM. Returns {level, background, interests, goals} (empty strings
+    where the student said nothing). Robust to models that wrap JSON in prose."""
+    name = provider or default_provider()
+    if not name or not provider_ready(name):
+        raise HTTPException(403, "That AI provider is not available.")
+    handler = _AI_PROVIDERS.get(name)
+    if handler is None:
+        raise HTTPException(503, f"Unknown AI provider '{name}' (supported: {', '.join(_AI_PROVIDERS)})")
+    pconf = PROVIDERS[name]
+    use_model = model or pconf["default_model"]
+    user = f"The student said:\n\n{answer_text}\n\nExtract their profile as a JSON object."
+    raw = handler([{"role": "user", "content": user}], _EXTRACTION_SYSTEM, use_model, pconf["key"])
+    data = _parse_json_object(raw)
+    return {k: str(data.get(k, "") or "").strip() for k in _PROFILE_KEYS}
+
+
+# ---- Structured-output: retention quiz generation + grading -----------------
+# The tutor periodically tests retention by generating a quiz question from the
+# recent conversation, then LLM-grades the student's free-text answer.  Both calls
+# use the same JSON-only structured-output pattern as extract_profile.
+
+_QUIZ_GENERAL_SYSTEM = (
+    "You are a quantum-computing tutor generating a short quiz question to engage a student "
+    "who is exploring quantum computing. The student has no recent tutoring context, so pick "
+    "any foundational or interesting quantum computing topic — superposition, entanglement, "
+    "specific gates (H, CNOT, T, S, Toffoli…), measurement, the Bloch sphere, or algorithms "
+    "like Grover's search or Shor's factoring. Aim for a question that builds intuition, "
+    "not trivia.\n\n"
+    "Respond with ONLY a single JSON object — no prose, no markdown fences.\n\n"
+    "Alternate between two question types — roughly half multiple-choice, half open-ended. "
+    'Always include: "type" (exactly "text" or "multiple_choice"), "question" (the question '
+    'text), "topic" (a one-to-five-word label, e.g. "Hadamard gate"), "expected_answer" '
+    "(a thorough reference answer, a few sentences).\n\n"
+    'For "multiple_choice" also include: "options" — a JSON array of exactly 4 option '
+    "strings (no letter prefixes, just the text), and \"correct_option\" — the letter of "
+    'the correct choice: "A", "B", "C", or "D" (corresponding to options[0]–[3]).\n\n'
+    "The question must test genuine understanding. The three wrong MC options must be "
+    "plausible distractors."
+)
+
+_QUIZ_GENERATION_SYSTEM = (
+    "You are a quantum-computing tutor generating a short retention-check quiz question "
+    "for a student based on what you have just been teaching them. "
+    "Respond with ONLY a single JSON object — no prose, no markdown fences.\n\n"
+    "Alternate between two question types — roughly half of your questions should be "
+    "multiple-choice, the other half open-ended text. Choose whichever fits best for "
+    "the concept you're testing; multiple-choice suits factual recall and definitions, "
+    "open-ended suits explanations and understanding.\n\n"
+    'Always include: "type" (exactly "text" or "multiple_choice"), "question" (the question '
+    'text), "topic" (a one-to-five-word label, e.g. "Hadamard gate"), "expected_answer" '
+    "(a thorough reference answer, a few sentences).\n\n"
+    'For "multiple_choice" also include: "options" — a JSON array of exactly 4 option '
+    "strings (no letter prefixes, just the text), and \"correct_option\" — the letter of "
+    'the correct choice: "A", "B", "C", or "D" (corresponding to options[0]–[3]).\n\n'
+    "The question must test genuine understanding, not guessing from simulator output. "
+    "The three wrong MC options must be plausible distractors. "
+    "Never repeat a question verbatim from the conversation."
+)
+
+_QUIZ_GRADING_SYSTEM = (
+    "You are a quantum-computing tutor grading a student's answer to a quiz question. "
+    "Respond with ONLY a single JSON object — no prose, no markdown fences — with exactly "
+    'these keys: "grade" (string: exactly one of "correct", "partial", or "incorrect"), '
+    '"score" (number: 1.0 for correct, 0.5 for partial, 0.0 for incorrect), '
+    '"feedback" (string: one concise sentence explaining what was right, wrong, or missing). '
+    "Be fair and encouraging. A student who gets the core idea right but misses a detail "
+    "is 'partial', not 'incorrect'. Never reveal the expected answer in your feedback "
+    "unless the student was incorrect — then you may give a one-sentence hint."
+)
+
+# Maximum characters of recent conversation context we send for quiz generation.
+_MAX_QUIZ_CONTEXT_CHARS = 4000
+
+
+_VALID_MC_LETTERS = {"A", "B", "C", "D"}
+
+
+def generate_quiz(context: str, provider: str | None = None,
+                  model: str | None = None,
+                  general: bool = False) -> dict:
+    """Generate a quiz question from recent tutoring context, or a general quantum
+    computing question when ``general=True`` (or when ``context`` is empty).
+
+    Returns a dict with at minimum ``{type, question, topic, expected_answer}``.
+    For multiple-choice questions also includes ``{options, correct_option}``.
+    On parse failure all string fields are empty (caller should skip the quiz).
+    """
+    name = provider or default_provider()
+    if not name or not provider_ready(name):
+        raise HTTPException(403, "That AI provider is not available.")
+    handler = _AI_PROVIDERS.get(name)
+    if handler is None:
+        raise HTTPException(503, f"Unknown AI provider '{name}' (supported: {', '.join(_AI_PROVIDERS)})")
+    pconf = PROVIDERS[name]
+    use_model = model or pconf["default_model"]
+    if general or not context.strip():
+        system = _QUIZ_GENERAL_SYSTEM
+        user = "Generate a quiz question for a student who is just starting to explore quantum computing."
+    else:
+        system = _QUIZ_GENERATION_SYSTEM
+        trimmed = context.strip()[:_MAX_QUIZ_CONTEXT_CHARS]
+        user = (
+            "Here is a recent excerpt from a quantum-computing tutoring session:\n\n"
+            f"{trimmed}\n\n"
+            "Generate a retention quiz question based on something important taught here."
+        )
+    raw = handler([{"role": "user", "content": user}], system, use_model, pconf["key"])
+    data = _parse_json_object(raw)
+
+    quiz_type = str(data.get("type", "") or "").strip().lower()
+    if quiz_type not in ("text", "multiple_choice"):
+        quiz_type = "text"  # safe default; MC fields simply won't be present
+
+    result: dict = {
+        "type": quiz_type,
+        "question": str(data.get("question", "") or "").strip(),
+        "topic": str(data.get("topic", "") or "").strip(),
+        "expected_answer": str(data.get("expected_answer", "") or "").strip(),
+        "options": None,
+        "correct_option": None,
+    }
+
+    if quiz_type == "multiple_choice":
+        raw_opts = data.get("options")
+        if isinstance(raw_opts, list) and len(raw_opts) == 4:
+            result["options"] = [str(o).strip() for o in raw_opts]
+        else:
+            # Malformed MC falls back to text so we never show a broken MC widget.
+            result["type"] = "text"
+            result["options"] = None
+
+        co = str(data.get("correct_option", "") or "").strip().upper()
+        result["correct_option"] = co if co in _VALID_MC_LETTERS else None
+        if result["correct_option"] is None:
+            result["type"] = "text"   # can't show MC without a known correct answer
+
+    return result
+
+
+def grade_mc_quiz(learner_answer: str, correct_option: str,
+                  options: list[str] | None = None) -> dict:
+    """Grade a multiple-choice answer by direct letter comparison — no LLM call.
+
+    ``learner_answer`` must be a single letter A–D.  Returns
+    ``{grade, score, feedback}``."""
+    chosen = learner_answer.strip().upper()
+    if chosen not in _VALID_MC_LETTERS:
+        return {"grade": "incorrect", "score": 0.0,
+                "feedback": "Please select one of A, B, C, or D."}
+    if chosen == correct_option.upper():
+        return {"grade": "correct", "score": 1.0,
+                "feedback": "Correct!"}
+    # Wrong — build a brief feedback that names the right letter + text if available.
+    idx = ord(correct_option.upper()) - ord("A")
+    right_text = options[idx] if options and 0 <= idx < len(options) else ""
+    feedback = f"Not quite — the correct answer was {correct_option}"
+    if right_text:
+        feedback += f": {right_text}."
+    else:
+        feedback += "."
+    return {"grade": "incorrect", "score": 0.0, "feedback": feedback}
+
+
+def grade_quiz(question: str, expected_answer: str, learner_answer: str,
+               provider: str | None = None, model: str | None = None) -> dict:
+    """LLM-grade a student's open-ended (text) answer against the reference.
+
+    Returns ``{grade, score, feedback}`` where grade is one of
+    "correct" / "partial" / "incorrect".  Defaults to incorrect on parse failure
+    so a broken grading call doesn't silently pass students.
+    Use ``grade_mc_quiz`` for multiple-choice questions instead.
+    """
+    name = provider or default_provider()
+    if not name or not provider_ready(name):
+        raise HTTPException(403, "That AI provider is not available.")
+    handler = _AI_PROVIDERS.get(name)
+    if handler is None:
+        raise HTTPException(503, f"Unknown AI provider '{name}' (supported: {', '.join(_AI_PROVIDERS)})")
+    pconf = PROVIDERS[name]
+    use_model = model or pconf["default_model"]
+    user = (
+        f"Question: {question}\n\n"
+        f"Reference answer: {expected_answer}\n\n"
+        f"Student's answer: {learner_answer}\n\n"
+        "Grade the student's answer."
+    )
+    raw = handler([{"role": "user", "content": user}], _QUIZ_GRADING_SYSTEM, use_model, pconf["key"])
+    data = _parse_json_object(raw)
+    valid_grades = {"correct", "partial", "incorrect"}
+    grade = str(data.get("grade", "") or "").strip().lower()
+    if grade not in valid_grades:
+        grade = "incorrect"
+    try:
+        score = float(data.get("score", 0.0))
+        score = max(0.0, min(1.0, score))
+    except (TypeError, ValueError):
+        score = {"correct": 1.0, "partial": 0.5}.get(grade, 0.0)
+    feedback = str(data.get("feedback", "") or "").strip()
+    return {"grade": grade, "score": score, "feedback": feedback}
+
+
+# ---- Persona handoff: farewell + greeting on persona switch -----------------
+# When the student switches personas mid-session, both the outgoing and incoming
+# professors say something so the transition feels natural and in-character.
+# Each message is short (2–4 sentences); the prompt cap keeps cost low.
+
+_HANDOFF_MAX_CHARS = 600  # soft cap — bumped to give room for recap + opinion; hard-trim at 2x
+
+# How many conversation turns to include in the handoff context (user + assistant).
+_HANDOFF_HISTORY_TURNS = 10
+# How many characters to keep per individual turn (long answers get truncated).
+_HANDOFF_TURN_CHARS = 400
+
+
+def _format_handoff_history(history: list[dict], from_name: str) -> str:
+    """Format the tail of a conversation as a compact transcript for the handoff prompt.
+
+    Assistant turns are attributed to ``from_name`` (the outgoing persona).
+    Returns an empty string when ``history`` is empty.
+    """
+    if not history:
+        return ""
+    tail = history[-_HANDOFF_HISTORY_TURNS:]
+    lines = []
+    for t in tail:
+        speaker = "Student" if t["role"] == "user" else from_name
+        snippet = t["content"].replace("\n", " ").strip()[:_HANDOFF_TURN_CHARS]
+        lines.append(f"{speaker}: {snippet}")
+    return "\n\nRecent conversation:\n" + "\n".join(lines)
+
+
+def _handoff_call(
+    handler,
+    pconf: dict,
+    model: str,
+    actor_voice: str,
+    actor_name: str,
+    other_name: str,
+    action: str,
+    context_line: str,
+    history_text: str = "",
+) -> str:
+    """One LLM call for a handoff turn (farewell or greeting).
+
+    ``action`` is ``"farewell"`` or ``"greeting"``; ``context_line`` describes
+    the situation; ``history_text`` is a pre-formatted transcript excerpt the
+    model can reference. Returns raw stripped text, hard-trimmed at 2 ×
+    _HANDOFF_MAX_CHARS so an over-eager model can't blow the budget.
+    """
+    system = (
+        f"{actor_voice}\n\n"
+        f"Write a single short {action} message — 2 to 4 sentences, under "
+        f"{_HANDOFF_MAX_CHARS} characters. {context_line}"
+        f"{history_text}\n\n"
+        "Stay completely in character. No preamble, no sign-off label — just "
+        "the message itself."
+    )
+    user = f"[Write the {action} now, in character as {actor_name}.]"
+    text = handler([{"role": "user", "content": user}], system, model, pconf["key"])
+    return (text or "").strip()[: _HANDOFF_MAX_CHARS * 2]
+
+
+def persona_handoff(
+    from_key: str,
+    to_key: str,
+    provider: str | None = None,
+    model: str | None = None,
+    history: list[dict] | None = None,
+) -> dict:
+    """Generate a farewell from the outgoing persona and a greeting from the
+    incoming one, each as a short in-character message.
+
+    ``history`` is the recent conversation (list of ``{"role", "content"}``
+    dicts, newest last). When provided, both messages reference what was
+    actually discussed: the farewell recaps key topics and shares the outgoing
+    persona's impression of the incoming one; the greeting picks up a thread
+    and acknowledges the handoff.
+
+    Returns ``{"farewell": str, "greeting": str}``. When the two keys are
+    identical (no-op switch) both strings are empty and no LLM call is made.
+    Raises 422 for unknown persona keys and 403 when no AI provider is wired.
+    """
+    if from_key == to_key:
+        return {"farewell": "", "greeting": ""}
+    if from_key not in PERSONAS:
+        raise HTTPException(422, f"unknown persona '{from_key}'")
+    if to_key not in PERSONAS:
+        raise HTTPException(422, f"unknown persona '{to_key}'")
+
+    name = provider or default_provider()
+    if not name or not provider_ready(name):
+        raise HTTPException(403, "That AI provider is not available.")
+    handler = _AI_PROVIDERS.get(name)
+    if handler is None:
+        raise HTTPException(
+            503,
+            f"Unknown AI provider '{name}' (supported: {', '.join(_AI_PROVIDERS)})",
+        )
+    pconf = PROVIDERS[name]
+    use_model = model or pconf["default_model"]
+
+    from_p = PERSONAS[from_key]
+    to_p = PERSONAS[to_key]
+
+    history_text = _format_handoff_history(history or [], from_p["name"])
+
+    farewell = _handoff_call(
+        handler, pconf, use_model,
+        actor_voice=from_p["voice"],
+        actor_name=from_p["name"],
+        other_name=to_p["name"],
+        action="farewell",
+        context_line=(
+            f"You are {from_p['name']} saying goodbye to a quantum-computing "
+            f"student who is switching to {to_p['name']}. Briefly touch on the "
+            f"topic(s) you covered together, then hand them off — and feel free "
+            f"to share a short, in-character remark about {to_p['name']}."
+        ),
+        history_text=history_text,
+    )
+    greeting = _handoff_call(
+        handler, pconf, use_model,
+        actor_voice=to_p["voice"],
+        actor_name=to_p["name"],
+        other_name=from_p["name"],
+        action="greeting",
+        context_line=(
+            f"You are {to_p['name']} welcoming a quantum-computing student "
+            f"just handed off by {from_p['name']}. Acknowledge the handoff and, "
+            f"if there's an interesting thread from their conversation, pick it "
+            f"up from your own unique perspective."
+        ),
+        history_text=history_text,
+    )
+    return {"farewell": farewell, "greeting": greeting}
 
 
 # The student can optionally attach a specific question and a prior conversation
@@ -849,6 +1504,10 @@ def explain_circuit(spec: CircuitSpec, question: str | None = None,
 MAX_QUESTION_CHARS = 1000
 MAX_HISTORY_TURNS = 40        # cap the back-and-forth length
 MAX_HISTORY_CHARS = 60000     # and the total transcript size
+
+# How many assistant turns between automatic quiz triggers. Exposed in /config
+# so the frontend can match this threshold without hardcoding it.
+QUIZ_INTERVAL = int(os.getenv("QCB_QUIZ_INTERVAL", "3"))
 
 
 def _quantum_target_label() -> str:

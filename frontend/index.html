@@ -107,6 +107,39 @@
       <div class="panel" id="panel-bloch"><div id="bloch" class="bloch-row"></div></div>
       <div class="panel" id="panel-queue"><div id="queue" class="queue"></div></div>
       <div class="panel" id="panel-explain">
+        <!-- Profile panel: collapsible editor for the stored learner profile.
+             Hidden by default; toggled by the Profile button in the explain bar. -->
+        <div id="profile-panel" class="profile-panel hidden" role="region" aria-label="Learner profile">
+          <p class="profile-panel-title">Your profile</p>
+          <p class="profile-hint">The professor uses this to tailor explanations to your level.</p>
+          <div class="profile-fields">
+            <div class="profile-field">
+              <label for="pf-name">Name</label>
+              <input id="pf-name" type="text" maxlength="200" placeholder="Ada" />
+            </div>
+            <div class="profile-field">
+              <label for="pf-level">Experience level</label>
+              <input id="pf-level" type="text" maxlength="200" placeholder="complete beginner" />
+            </div>
+            <div class="profile-field full">
+              <label for="pf-background">Background</label>
+              <textarea id="pf-background" rows="2" maxlength="2000" placeholder="Software engineer, rusty on linear algebra…"></textarea>
+            </div>
+            <div class="profile-field full">
+              <label for="pf-interests">Interests</label>
+              <textarea id="pf-interests" rows="2" maxlength="2000" placeholder="Shor's algorithm, quantum error correction…"></textarea>
+            </div>
+            <div class="profile-field full">
+              <label for="pf-goals">Goals</label>
+              <textarea id="pf-goals" rows="2" maxlength="2000" placeholder="Build intuition for superposition and entanglement…"></textarea>
+            </div>
+          </div>
+          <div class="profile-actions">
+            <span class="profile-saved" id="profile-saved"></span>
+            <button id="profile-save-btn" class="btn btn-roll" onclick="saveProfile()">Save</button>
+            <button class="btn" onclick="toggleProfilePanel()">Close</button>
+          </div>
+        </div>
         <div class="prof-header">
           <span class="prof-avatar" id="prof-avatar-slot" aria-hidden="true"></span>
           <div class="prof-meta">
@@ -136,6 +169,13 @@
         </div>
         <div class="explain-bar">
           <button id="explain-btn" class="btn btn-roll">Explain this circuit</button>
+          <!-- Quiz me: shown only when the memory layer is wired (memory_enabled from /config) -->
+          <button id="quiz-btn" class="btn btn-quiz" hidden
+                  title="Ask the professor to quiz you on something you just learned"
+                  onclick="triggerQuiz()">Quiz me</button>
+          <button id="profile-btn" class="btn btn-profile" hidden
+                  title="View and edit your learner profile"
+                  onclick="toggleProfilePanel()">👤 Profile</button>
           <label class="explain-auto" title="Automatically explain the circuit after you run it on hardware">
             <input type="checkbox" id="explain-auto" checked /> Auto-explain after a run
           </label>
@@ -143,8 +183,8 @@
           <button id="explain-clear" class="btn" title="Start a fresh conversation">Clear chat</button>
         </div>
         <div class="explain-ask">
-          <input type="text" id="explain-q" class="explain-q" maxlength="1000"
-                 placeholder="Ask the professor a question about this circuit…" />
+          <textarea id="explain-q" class="explain-q" maxlength="1000" rows="2"
+                    placeholder="Ask the professor a question about this circuit…"></textarea>
           <button id="explain-ask-btn" class="btn">Ask</button>
         </div>
         <div id="explain-out" class="explain-out">
@@ -221,6 +261,33 @@
     <label>Angle: <span id="angle-val">90</span>°</label>
     <input type="range" id="angle-slider" min="-180" max="180" step="1" value="90" />
     <button id="angle-done" class="btn">Done</button>
+  </div>
+
+  <!-- Onboarding modal: shown on first visit (before onboarded_at is set).
+       The professor asks a brief intake question; the answer is sent to
+       /learner/{id}/onboarding which extracts a structured profile the
+       professor will use to tailor every future explanation. -->
+  <div id="onboarding-modal" class="onboarding-modal hidden"
+       role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+    <div class="onboarding-backdrop" id="onboarding-backdrop"></div>
+    <div class="onboarding-card">
+      <div class="onboarding-prof-row">
+        <span class="prof-avatar onboarding-avatar" id="onboarding-avatar" aria-hidden="true"></span>
+        <div class="onboarding-bubble">
+          <p class="onboarding-title" id="onboarding-title">Before we dive in…</p>
+          <p>Tell me a bit about yourself. What's your background? Have you touched quantum computing before? And what are you hoping to explore here?</p>
+          <p class="onboarding-hint">I'll use this to tailor my explanations to your level — a sentence or two is plenty.</p>
+        </div>
+      </div>
+      <textarea id="onboarding-input" class="onboarding-input" rows="4"
+        placeholder="I'm a software engineer with some linear algebra background, curious about Shor's algorithm…"
+        aria-label="Tell the professor about yourself"></textarea>
+      <div class="onboarding-actions">
+        <span class="onboarding-status" id="onboarding-status"></span>
+        <button class="btn" onclick="skipOnboarding()">Maybe later</button>
+        <button id="onboarding-submit" class="btn btn-roll" onclick="submitOnboarding()">Tell the professor</button>
+      </div>
+    </div>
   </div>
 
   <!-- Asset data first (avatars, generated dice), then the app modules in
